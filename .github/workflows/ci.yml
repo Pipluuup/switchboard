@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    env:
+      # 隔离数据目录：e2e 会清空实例配置，绝不能碰真实数据
+      SWITCHBOARD_DATA_DIR: /tmp/switchboard-ci-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Converter tests
+        run: python tests/test_converter.py
+
+      - name: Usage window tests
+        run: python tests/test_usage.py
+
+      - name: E2E tests
+        run: |
+          python run.py --no-browser --port 8000 &
+          python tests/mock_upstream.py --port 8100 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/healthz && break
+            sleep 1
+          done
+          python tests/test_e2e.py
