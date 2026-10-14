@@ -1,6 +1,6 @@
 # Switchboard
 
-带 Web 管理界面的本地中转网关。把 CommandCode（Goat 套餐）或任意 OpenAI 格式的中转服务，桥接给 VS Code 里的 Claude Code CLI 使用，同时提供多上游故障切换、模型映射、密钥分发、限流与用量统计。
+带 Web 管理界面的本地中转网关，**为 WorkBuddy、Claude Code 等 Agent 客户端打造**。把任意 Anthropic / OpenAI 格式的上游服务（CommandCode、OpenCode Go 等）桥接给 Agent 使用，内置 WorkBuddy / Claude Code 一键接入指南（发一段提示词，Agent 自行完成接入并自测连通），同时提供多上游故障切换、模型映射、密钥分发、限流与用量统计。
 
 相比指南里那个硬编码的 `proxy.py`，这个版本：
 
