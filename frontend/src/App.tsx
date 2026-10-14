@@ -113,9 +113,9 @@ export default function App() {
     <Layout style={{ minHeight: '100vh' }}>
       <Sider width={236} style={{ borderRight: '1px solid #222938', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '18px 16px 14px' }}>
-          <div className="brand-logo">P</div>
+          <div className="brand-logo">S</div>
           <div>
-            <div style={{ fontWeight: 650, fontSize: 13.5, lineHeight: 1.3 }}>Proxy</div>
+            <div style={{ fontWeight: 650, fontSize: 13.5, lineHeight: 1.3 }}>Switchboard</div>
             <div style={{ fontSize: 11, color: '#5c6880' }}>中转网关控制台</div>
           </div>
         </div>
