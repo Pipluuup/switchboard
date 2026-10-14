@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Switchboard · 中转网关控制台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">CP</div>
+      <div class="brand-text">
+        <div class="brand-title">Switchboard</div>
+        <div class="brand-sub">中转网关控制台</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">监控</div>
+      <button class="nav-item active" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>概览</button>
+      <button class="nav-item" data-view="usage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 20V12"/><path d="M12 20V5"/><path d="M19 20v-5"/></svg>用量</button>
+      <button class="nav-item" data-view="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h.01M4 12h.01M4 18h.01M9 6h11M9 12h11M9 18h11"/></svg>请求日志</button>
+      <div class="nav-label">路由</div>
+      <button class="nav-item" data-view="upstreams"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3.5" y="4" width="17" height="7" rx="1.5"/><rect x="3.5" y="13" width="17" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>上游管理</button>
+      <button class="nav-item" data-view="mappings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg>模型映射</button>
+      <button class="nav-item" data-view="keys"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="14" r="4.5"/><path d="M11.5 10.5 20 2M16 6l3 3"/></svg>客户端 Key</button>
+      <div class="nav-label">系统</div>
+      <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>设置</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="link-line"></div>
+      <div class="status-row">
+        <span class="dot" id="serviceDot"></span>
+        <span id="serviceText">连接中…</span>
+      </div>
+      <div class="ver">v1.0.0</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="viewTitle">概览</h1>
+        <p class="sub" id="viewSub">服务运行状态与用量统计</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn ghost" id="btnRefresh">刷新</button>
+        <button class="btn primary" id="btnQuickstart">接入指南</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <!-- ============ 概览 ============ -->
+      <section class="view" id="view-dashboard">
+        <div class="cards" id="statCards"></div>
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head">
+              <h3>近 24 小时请求趋势</h3>
+              <span class="tag">按小时</span>
+            </div>
+            <div class="chart-box" id="timelineChart"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>上游负载分布</h3>
+              <span class="tag">请求数</span>
+            </div>
+            <div class="chart-box" id="upstreamChart"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>模型用量 Top 10</h3></div>
+          <div class="table-wrap"><table class="table" id="modelTable"></table></div>
+        </div>
+      </section>
+
+      <!-- ============ 用量 ============ -->
+      <section class="view hidden" id="view-usage">
+        <div class="cards" id="usageCards"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>滚动窗口用量</h3>
+            <span class="tag">5 小时 / 7 天 / 30 天</span>
+          </div>
+          <div class="table-wrap"><table class="table" id="usageTable"></table></div>
+          <p class="hint" id="usageHint"></p>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>窗口内模型用量</h3>
+            <div class="head-actions">
+              <select id="usageWindowSel" class="select">
+                <option value="5h">近 5 小时</option>
+                <option value="7d">近 7 天</option>
+                <option value="30d">近 30 天</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="table" id="usageModelTable"></table></div>
+        </div>
+      </section>
+
+      <!-- ============ 上游管理 ============ -->
+      <section class="view hidden" id="view-upstreams">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>上游节点</h3>
+            <div class="head-actions">
+              <button class="btn ghost sm" id="btnHealthAll">批量体检</button>
+              <button class="btn primary sm" id="btnAddUpstream">+ 新增上游</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="table" id="upstreamTable"></table></div>
+          <p class="hint">优先级数字越小越优先；连续失败达到阈值后节点进入冷却并自动切换到下一个可用节点。</p>
+        </div>
+      </section>
+
+      <!-- ============ 模型映射 ============ -->
+      <section class="view hidden" id="view-mappings">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>模型别名映射</h3>
+            <button class="btn primary sm" id="btnAddMapping">+ 新增映射</button>
+          </div>
+          <div class="table-wrap"><table class="table" id="mappingTable"></table></div>
+          <p class="hint">客户端请求 <code>别名</code> 时，实际用 <code>目标模型</code> 请求上游；可指定固定走某个上游，留空则按调度策略自动选择。</p>
+        </div>
+      </section>
+
+      <!-- ============ 客户端 Key ============ -->
+      <section class="view hidden" id="view-keys">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>客户端密钥</h3>
+            <button class="btn primary sm" id="btnAddKey">+ 新增 Key</button>
+          </div>
+          <div class="table-wrap"><table class="table" id="keyTable"></table></div>
+          <p class="hint">为每个本地工具（Claude Code、其他 IDE 插件）分发独立 Key，可单独限速、限模型、停用。留空允许模型即表示不限制。</p>
+        </div>
+      </section>
+
+      <!-- ============ 日志 ============ -->
+      <section class="view hidden" id="view-logs">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>请求日志</h3>
+            <div class="head-actions">
+              <select id="logFilter" class="select">
+                <option value="">全部</option>
+                <option value="1">仅成功</option>
+                <option value="0">仅失败</option>
+              </select>
+              <input id="logKeyword" class="input" placeholder="搜索模型 / 上游 / 错误">
+              <button class="btn ghost sm" id="btnSearchLog">搜索</button>
+              <button class="btn danger sm" id="btnClearLog">清空</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="table" id="logTable"></table></div>
+          <div class="pager">
+            <button class="btn ghost sm" id="logPrev">上一页</button>
+            <span id="logPageInfo">-</span>
+            <button class="btn ghost sm" id="logNext">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 设置 ============ -->
+      <section class="view hidden" id="view-settings">
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><h3>服务设置</h3></div>
+            <div class="form">
+              <label>监听地址<input class="input" id="setHost" placeholder="127.0.0.1"></label>
+              <label>监听端口<input class="input" id="setPort" type="number" placeholder="8000"></label>
+              <label>管理口令（留空即不鉴权）<input class="input" id="setToken" placeholder="设置后前端需输入口令"></label>
+              <label>请求超时（秒）<input class="input" id="setTimeout" type="number"></label>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>调度与容错</h3></div>
+            <div class="form">
+              <label>失败阈值（连续失败几次进入冷却）<input class="input" id="setFailThreshold" type="number"></label>
+              <label>冷却时间（秒）<input class="input" id="setCooldown" type="number"></label>
+              <label>健康检查间隔（秒）<input class="input" id="setHealthInterval" type="number"></label>
+              <label class="check"><input type="checkbox" id="setHealthEnabled"> 启用后台健康检查</label>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>日志</h3></div>
+            <div class="form">
+              <label>日志保留天数（0 = 永久）<input class="input" id="setRetention" type="number"></label>
+              <label class="check"><input type="checkbox" id="setEnableLog"> 记录请求日志</label>
+              <label class="check"><input type="checkbox" id="setAutoOpen"> 启动时自动打开浏览器</label>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>配置备份</h3></div>
+            <div class="form">
+              <p class="hint">导出为 JSON，可在另一台机器一键导入（含上游、映射、Key）。为安全起见导入不含监听地址与端口。</p>
+              <div class="head-actions">
+                <button class="btn ghost sm" id="btnExport">导出配置</button>
+                <button class="btn ghost sm" id="btnImport">导入配置</button>
+              </div>
+              <input type="file" id="importFile" accept=".json" class="hidden">
+            </div>
+          </div>
+        </div>
+        <div class="save-bar">
+          <button class="btn primary" id="btnSaveSettings">保存设置</button>
+          <span class="save-tip" id="saveTip"></span>
+        </div>
+        <p class="hint" id="settingsHint"></p>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- 弹窗 -->
+<div class="modal-mask hidden" id="modalMask">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modalTitle">编辑</h3>
+      <button class="icon-btn" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="modalCancel">取消</button>
+      <button class="btn primary" id="modalOk">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

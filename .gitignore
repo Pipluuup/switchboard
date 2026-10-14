@@ -1,0 +1,18 @@
+# 运行数据（含上游 API Key、请求日志、SQLite 统计）——绝不提交
+data/
+
+# 打包产物与构建中间件
+release/
+release.zip
+build/
+.pytest_cache/
+
+# Python
+__pycache__/
+*.pyc
+
+# 前端
+frontend/node_modules/
+
+# 个人笔记
+.workbuddy/
