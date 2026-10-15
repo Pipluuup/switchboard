@@ -38,6 +38,8 @@ jobs:
 
       - name: Build exe
         run: python scripts/build_exe.py --no-clean
+        env:
+          PYTHONIOENCODING: utf-8
 
       - name: Rename artifact with version
         shell: pwsh

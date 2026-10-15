@@ -150,6 +150,12 @@ def clean_artifacts() -> None:
 
 
 if __name__ == "__main__":
+    # 非 UTF-8 代码页（如英文 Windows / CI）下打印中文横幅会崩
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001
+            pass
     p = argparse.ArgumentParser(description="打包 Switchboard 为 exe")
     p.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
     p.add_argument("--no-clean", action="store_true", help="跳过 --clean，复用构建缓存")
