@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS request_logs (
     latency_ms INTEGER DEFAULT 0,
     error TEXT DEFAULT '',
     request_body TEXT DEFAULT '',
-    response_body TEXT DEFAULT ''
+    response_body TEXT DEFAULT '',
+    caveman_saved INTEGER DEFAULT 0,
+    voice_injected INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON request_logs(ts);
 CREATE INDEX IF NOT EXISTS idx_logs_ok ON request_logs(ok);
@@ -56,11 +58,14 @@ class LogDB:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
-        # 旧库迁移：补齐后加的详情列
+        # 旧库迁移：补齐后加的详情列与优化统计列
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(request_logs)").fetchall()}
         for col in ("request_body", "response_body"):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE request_logs ADD COLUMN {col} TEXT DEFAULT ''")
+        for col in ("caveman_saved", "voice_injected"):
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE request_logs ADD COLUMN {col} INTEGER DEFAULT 0")
         self._conn.commit()
 
     def add(self, **kw: Any) -> None:
@@ -69,10 +74,12 @@ class LogDB:
             "in_protocol", "out_protocol", "request_model", "actual_model",
             "stream", "status", "ok", "input_tokens", "output_tokens",
             "latency_ms", "error", "request_body", "response_body",
+            "caveman_saved", "voice_injected",
         ]
         kw.setdefault("ts", time.time())
         vals = [kw.get(c, 0 if c in {"stream", "status", "ok", "input_tokens",
-                                     "output_tokens", "latency_ms"} else "") for c in cols]
+                                     "output_tokens", "latency_ms",
+                                     "caveman_saved", "voice_injected"} else "") for c in cols]
         with self._lock:
             self._conn.execute(
                 f"INSERT INTO request_logs ({','.join(cols)}) VALUES ({','.join(['?'] * len(cols))})",
@@ -85,6 +92,7 @@ class LogDB:
         "id", "ts", "client_name", "upstream_name", "in_protocol", "out_protocol",
         "request_model", "actual_model", "stream", "status", "ok",
         "input_tokens", "output_tokens", "latency_ms", "error",
+        "caveman_saved", "voice_injected",
     )
 
     def query(self, limit: int = 100, offset: int = 0, ok: int | None = None,

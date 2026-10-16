@@ -94,6 +94,7 @@ def build(mode: str, clean: bool) -> int:
         "--workpath", os.path.join(ROOT, "build", "pyinstaller"),
         "--specpath", os.path.join(ROOT, "build"),
         "--add-data", os.path.join(ROOT, "web") + os.pathsep + "web",
+        "--add-data", os.path.join(ROOT, "extension") + os.pathsep + "extension",
         "--collect-submodules", "backend",
         "--collect-submodules", "anyio",
         "--exclude-module", "pytest",

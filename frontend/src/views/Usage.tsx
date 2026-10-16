@@ -21,13 +21,14 @@ export default function Usage() {
   const { message } = App.useApp()
   const [data, setData] = useState<Usage | null>(null)
   const [win, setWin] = useState<(typeof USAGE_WINDOWS)[number]>('5h')
-  const [showPlan, setShowPlan] = useState(false)
+  const [showGo, setShowGo] = useState(false)
+  const [showArk, setShowArk] = useState(false)
 
   useEffect(() => {
     GET<Usage>('/api/usage')
       .then(setData)
       .catch((e) => message.error('加载用量失败：' + e.message))
-    GET<Settings>('/api/settings').then((s) => setShowPlan(s.show_plan_usage !== false)).catch(() => {})
+    GET<Settings>('/api/settings').then((s) => { setShowGo(s.show_usage_opencode !== false); setShowArk(s.show_usage_ark !== false) }).catch(() => {})
   }, [message])
 
   if (!data) return null
@@ -160,12 +161,8 @@ export default function Usage() {
         />
       </Card>
 
-      {showPlan && (
-        <>
-          <GoQuota />
-          <ArkQuota />
-        </>
-      )}
+      {showGo && <GoQuota />}
+      {showArk && <ArkQuota />}
     </>
   )
 }

@@ -139,6 +139,8 @@ export interface LogItem {
   output_tokens: number
   latency_ms: number
   error: string
+  caveman_saved?: number
+  voice_injected?: number
 }
 
 export interface LogDetail extends LogItem {
@@ -166,7 +168,8 @@ export interface Settings {
   opencode_org_id: string
   opencode_console_cookie: string
   ark_console_cookie: string
-  show_plan_usage: boolean
+  show_usage_opencode: boolean
+  show_usage_ark: boolean
   log_payloads: boolean
   payload_max_bytes: number
   caveman_enabled: boolean

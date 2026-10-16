@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Switchboard Cookie 助手",
+  "version": "1.0.0",
+  "description": "一键把 OpenCode Console / 火山方舟控制台的登录 Cookie 写入本机 Switchboard 网关，免去 F12 手动复制。",
+  "permissions": ["cookies", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "*://*.opencode.ai/*",
+    "*://*.volcengine.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Switchboard Cookie 助手"
+  }
+}

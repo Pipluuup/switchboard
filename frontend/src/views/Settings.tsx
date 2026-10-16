@@ -18,10 +18,8 @@ type Draft = {
   health_check_enabled: boolean
   enable_log: boolean
   auto_open_browser: boolean
-  opencode_org_id: string
-  opencode_console_cookie: string
-  ark_console_cookie: string
-  show_plan_usage: boolean
+  show_usage_opencode: boolean
+  show_usage_ark: boolean
   log_payloads: boolean
   payload_max_bytes: number
   caveman_enabled: boolean
@@ -32,7 +30,6 @@ export default function SettingsView() {
   const [cache, setCache] = useState<Settings | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [tip, setTip] = useState<{ text: string; err?: boolean }>({ text: '' })
-  const [planOpen, setPlanOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -51,10 +48,8 @@ export default function SettingsView() {
           health_check_enabled: !!s.health_check_enabled,
           enable_log: !!s.enable_log,
           auto_open_browser: !!s.auto_open_browser,
-          opencode_org_id: s.opencode_org_id || '',
-          opencode_console_cookie: s.opencode_console_cookie || '',
-          ark_console_cookie: s.ark_console_cookie || '',
-          show_plan_usage: s.show_plan_usage !== false,
+          show_usage_opencode: s.show_usage_opencode !== false,
+          show_usage_ark: s.show_usage_ark !== false,
           log_payloads: !!s.log_payloads,
           payload_max_bytes: s.payload_max_bytes || 8192,
           caveman_enabled: !!s.caveman_enabled,
@@ -102,10 +97,8 @@ export default function SettingsView() {
         health_check_enabled: draft.health_check_enabled,
         enable_log: draft.enable_log,
         auto_open_browser: draft.auto_open_browser,
-        opencode_org_id: draft.opencode_org_id.trim(),
-        opencode_console_cookie: draft.opencode_console_cookie.trim(),
-        ark_console_cookie: draft.ark_console_cookie.trim(),
-        show_plan_usage: draft.show_plan_usage,
+        show_usage_opencode: draft.show_usage_opencode,
+        show_usage_ark: draft.show_usage_ark,
         log_payloads: draft.log_payloads,
         payload_max_bytes: Number(draft.payload_max_bytes) || 8192,
         caveman_enabled: draft.caveman_enabled,
@@ -219,57 +212,39 @@ export default function SettingsView() {
         <Col xs={24}>
           <Card
             size="small"
-            title={
-              <Space size={14} wrap>
-                Plan 实时查询（配额官方数据）
-                <Checkbox checked={planOpen} onChange={(e) => setPlanOpen(e.target.checked)}>
-                  展开配置
-                </Checkbox>
-                <Switch
-                  size="small"
-                  checked={draft.show_plan_usage}
-                  checkedChildren="展示用量"
-                  unCheckedChildren="隐藏用量"
-                  onChange={(v) => set('show_plan_usage', v)}
-                />
-              </Space>
-            }
+            title="Plan 实时查询（配额官方数据）"
           >
-            {planOpen && (
             <Space direction="vertical" size={13} style={{ width: '100%' }}>
               <Typography.Paragraph type="secondary" style={{ fontSize: 11.5, marginBottom: 0, lineHeight: 1.7 }}>
-                配置后「用量」页实时显示各 Coding Plan 的官方配额（OpenCode Go + 火山方舟）。
+                配置后「用量」页显示各 Coding Plan 的官方配额。Cookie 通过
+                <b> Switchboard Cookie 助手</b>浏览器扩展一键写入，无需手动复制。
               </Typography.Paragraph>
 
-              <div style={{ fontWeight: 550, fontSize: 12.5 }}>① OpenCode Console（Go 计划）</div>
-              <label style={{ fontSize: 12.5, color: '#93a0b8' }}>工作区 ID
-                <Input className="mono" style={{ marginTop: 4 }} value={draft.opencode_org_id}
-                  placeholder="wrk_xxxxxxxxxx（Console 地址 /console/&lt;id&gt;/go 里的 id）"
-                  onChange={(e) => set('opencode_org_id', e.target.value)} />
-              </label>
-              <label style={{ fontSize: 12.5, color: '#93a0b8' }}>会话 Cookie
-                <Input.Password className="mono" style={{ marginTop: 4 }} value={draft.opencode_console_cookie}
-                  placeholder="__Host-console_session 的值"
-                  onChange={(e) => set('opencode_console_cookie', e.target.value)} />
-              </label>
-              <Typography.Paragraph type="secondary" style={{ fontSize: 11.5, marginBottom: 0, lineHeight: 1.7 }}>
-                获取方式：登录 opencode.ai/console 后按 F12 → 应用(Application) → Cookie →
-                opencode.ai，复制 <code>__Host-console_session</code> 的值。约 30 天有效，过期后用量页会提示。
-              </Typography.Paragraph>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                  <Switch size="small" checked={draft.show_usage_opencode} onChange={(v) => set('show_usage_opencode', v)} />
+                  展示 OpenCode Go 用量
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                  <Switch size="small" checked={draft.show_usage_ark} onChange={(v) => set('show_usage_ark', v)} />
+                  展示火山方舟用量
+                </label>
+              </div>
 
-              <div style={{ fontWeight: 550, fontSize: 12.5, marginTop: 6 }}>② 火山方舟（编码计划）</div>
-              <label style={{ fontSize: 12.5, color: '#93a0b8' }}>控制台 Cookie
-                <Input.Password className="mono" style={{ marginTop: 4 }} value={draft.ark_console_cookie}
-                  placeholder="api/top/ark 请求头里的 Cookie 整串"
-                  onChange={(e) => set('ark_console_cookie', e.target.value)} />
-              </label>
-              <Typography.Paragraph type="secondary" style={{ fontSize: 11.5, marginBottom: 0, lineHeight: 1.7 }}>
-                获取方式：登录 console.volcengine.com/ark 打开编码计划页面，按 F12 → 网络(Network) →
-                随便找一条 <code>api/top/ark</code> 请求 → 请求标头 → 复制
-                <code>Cookie:</code> 后面的整串内容。会话失效后（用量页出现提示）重新复制即可。
-              </Typography.Paragraph>
+              <div style={{ borderTop: '1px solid #1d2434', paddingTop: 12 }}>
+                <div style={{ fontWeight: 550, fontSize: 12.5, marginBottom: 6 }}>
+                  Cookie 自动写入 · Switchboard Cookie 助手（浏览器扩展）
+                </div>
+                <Space direction="vertical" size={8} style={{ width: '100%', fontSize: 12 }}>
+                  <div>1. <a href="/api/extension/download">下载扩展</a> 并解压</div>
+                  <div>2. 打开 <code>chrome://extensions</code>，右上角开启「开发者模式」→「加载已解压的扩展程序」→ 选择解压出的 <code>switchboard-cookie-helper</code> 目录</div>
+                  <div>3. 在本浏览器分别登录 OpenCode Console 与火山方舟控制台，点扩展图标 → 对应按钮一键写入</div>
+                  <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>
+                    Cookie 过期后（用量页出现提示）重新点一下扩展按钮即可。若后台设置了管理令牌，在扩展弹窗底部填入一次。
+                  </Typography.Text>
+                </Space>
+              </div>
             </Space>
-            )}
           </Card>
         </Col>
       </Row>

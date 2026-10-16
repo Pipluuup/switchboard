@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .config import ClientKey, ModelMapping, Settings, Upstream, store
 from .database import db
@@ -324,6 +324,51 @@ async def rtk_status(_=Depends(require_admin)):
         return {"installed": True, "version": "", "path": path, "error": str(e)[:200]}
 
 
+@router.post("/caveman/preview")
+async def caveman_preview(data: dict[str, Any], _=Depends(require_admin)):
+    """文本验证：对传入的 messages 执行一次压缩并返回压缩后的实际内容。
+
+    不转发、不入库——纯粹让用户肉眼看到「模型实际会收到什么」。
+    入参：{"messages": [{role, content}, ...]}，content 支持 str 或 block 列表。
+    """
+    from . import caveman
+
+    msgs = data.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        raise HTTPException(400, "messages 不能为空")
+    body = {"model": "preview", "messages": json.loads(json.dumps(msgs, ensure_ascii=False))}
+    saved = caveman.compress_body(body)
+    before = json.dumps(msgs, ensure_ascii=False)
+    after = json.dumps(body["messages"], ensure_ascii=False)
+    return {"saved_chars": saved, "before_chars": len(before), "after_chars": len(after),
+            "messages": body["messages"]}
+
+
+@router.get("/extension/download")
+async def download_extension():
+    """打包浏览器扩展为 zip 供下载（extension/ 随 exe 携带，源码模式直接读仓库目录）。"""
+    import io
+    import zipfile
+
+    from .paths import resource_dir
+
+    ext_dir = os.path.join(resource_dir(), "extension")
+    if not os.path.isdir(ext_dir):
+        raise HTTPException(404, "扩展目录不存在（请重新打包以携带 extension/）")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in sorted(os.listdir(ext_dir)):
+            p = os.path.join(ext_dir, name)
+            if os.path.isfile(p):
+                zf.write(p, arcname=f"switchboard-cookie-helper/{name}")
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="switchboard-cookie-helper.zip"'},
+    )
+
+
 @router.delete("/logs")
 async def clear_logs(_=Depends(require_admin)):
     n = db.clear_all()
@@ -343,6 +388,15 @@ async def update_settings(data: dict[str, Any], _=Depends(require_admin)):
     # host/port 不在这里受理：改监听地址必须走 /api/server/restart（绑定预检 +
     # 进程交接），否则会出现「配置已写、进程未跟上」的半生效状态。
     data = {k: v for k, v in data.items() if k not in ("host", "port")}
+    # 运行日志：记录实际变更的键（扩展写 Cookie 等管理动作由此可追溯）
+    changed = {k: v for k, v in data.items() if getattr(store.config.settings, k, None) != v}
+    if changed:
+        def _mask(k: str, v: Any) -> Any:
+            if isinstance(v, str) and any(s in k for s in ("cookie", "token", "key", "password")):
+                return f"<{len(v)} 字符>"
+            return v
+        shown = ", ".join(f"{k}={_mask(k, v)}" for k, v in changed.items())
+        print(f"[settings] {time.strftime('%H:%M:%S')} 更新: {shown}")
     return store.update_settings(data).model_dump()
 
 

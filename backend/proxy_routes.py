@@ -325,7 +325,8 @@ async def handle_request(request: Request, in_protocol: str):
 
     # ---- Caveman 引擎：转发前瘦身（原地修改 body；日志详情记录的仍是原始请求） ----
     _, caveman_saved = caveman.compress_body(body)
-    if caveman.inject_voice(body):
+    voice_on = caveman.inject_voice(body)
+    if voice_on:
         print(f"[caveman] {model} voice 规则已注入（Say less）")
     if caveman_saved:
         print(f"[caveman] {model} <- {ck.name if ck else '匿名'} 瘦身 {caveman_saved} 字符")
@@ -377,7 +378,8 @@ async def handle_request(request: Request, in_protocol: str):
                    stream=int(stream), status=resp.status_code, ok=0,
                    input_tokens=in_tokens_est, latency_ms=latency,
                    error=f"HTTP {resp.status_code}: {text[:300]}",
-                   request_body=req_capture, response_body=_cap_detail(text))
+                   request_body=req_capture, response_body=_cap_detail(text),
+                   caveman_saved=caveman_saved, voice_injected=int(voice_on))
             return err_response(in_protocol, f"上游返回错误：{text[:400]}",
                                 resp.status_code, "api_error")
 
@@ -403,6 +405,7 @@ async def handle_request(request: Request, in_protocol: str):
                 latency_ms=int((time.time() - t0) * 1000), error="",
                 request_body=req_capture,
                 response_body=_resp_summary(captured, out_obj, up.protocol, tin, tout),
+                caveman_saved=caveman_saved, voice_injected=int(voice_on),
             )
             pool.report_success(up, int((time.time() - up_start) * 1000))
             if ck:
@@ -483,7 +486,8 @@ async def handle_request(request: Request, in_protocol: str):
            stream=int(stream), status=last_status or 502, ok=0,
            input_tokens=in_tokens_est, latency_ms=latency,
            error=last_err[:500] or "全部上游均不可用",
-           request_body=req_capture, response_body="")
+           request_body=req_capture, response_body="",
+           caveman_saved=caveman_saved, voice_injected=int(voice_on))
     return err_response(
         in_protocol,
         f"所有上游调用失败（已尝试 {len(tried)} 个）：{last_err[:300]}",

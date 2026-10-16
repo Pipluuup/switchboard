@@ -113,6 +113,16 @@ export default function Logs() {
             render: (v: string) => <Tag style={{ fontSize: 10.5 }} color={v === 'anthropic' ? 'purple' : 'blue'}>{v || '-'}</Tag>,
           },
           { title: 'Tokens 入/出', width: 110, render: (_: unknown, r: LogItem) => `${r.input_tokens || 0} / ${r.output_tokens || 0}` },
+          {
+            title: '优化',
+            width: 110,
+            render: (_: unknown, r: LogItem) => {
+              const tags = []
+              if (r.caveman_saved) tags.push(<Tag key="c" color="cyan" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>瘦身 {(r.caveman_saved / 1000).toFixed(1)}k</Tag>)
+              if (r.voice_injected) tags.push(<Tag key="v" color="geekblue" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>Say less</Tag>)
+              return tags.length ? tags : <span style={{ color: '#3a4356' }}>-</span>
+            },
+          },
           { title: '耗时', dataIndex: 'latency_ms', width: 90, render: (v: number) => v + ' ms' },
           {
             title: '错误',

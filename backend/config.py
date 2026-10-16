@@ -118,8 +118,9 @@ class Settings(BaseModel):
     # 火山方舟（console.volcengine.com）编码计划：粘贴控制台请求的完整 Cookie 串
     # （F12 → Network → 任意 api/top/ark 请求 → Request Headers → Cookie 整串）。
     ark_console_cookie: str = ""
-    # 用量页是否显示 Plan 实时查询配额卡片（设置页可关）
-    show_plan_usage: bool = True
+    # 用量页 Plan 实时查询配额卡片的分项开关（设置页可关）
+    show_usage_opencode: bool = True
+    show_usage_ark: bool = True
     # 请求日志是否保存请求体 / 响应体详情（默认关：内容大且含隐私）
     log_payloads: bool = False
     # 详情单侧截断长度（字符），防止长提示词撑爆数据库
