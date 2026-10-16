@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, InputNumber, Tag, Tooltip, Segmented, App, Space, Typography, Checkbox } from 'antd'
+import { Card, Table, Button, Modal, Form, Input, Select, InputNumber, Tag, Tooltip, Segmented, App, Space, Typography, Checkbox, Upload, Alert } from 'antd'
 import type { FormInstance } from 'antd'
-import { PlusOutlined, ThunderboltOutlined, GiftOutlined } from '@ant-design/icons'
+import { PlusOutlined, ThunderboltOutlined, GiftOutlined, ImportOutlined } from '@ant-design/icons'
 import { GET, POST, PUT, DEL } from '../api/client'
 import type { Upstream, UpstreamInput, TestResult } from '../api/types'
 import { fmtNum } from '../utils/format'
@@ -173,6 +173,7 @@ export default function Upstreams() {
   const [modelsOf, setModelsOf] = useState<Upstream | null>(null)
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelSel, setModelSel] = useState<string[]>([])
+  const [imported, setImported] = useState(false)
 
   const load = () => {
     GET<Upstream[]>('/api/upstreams')
@@ -206,6 +207,59 @@ export default function Upstreams() {
   const closeEdit = () => {
     setEditing(null)
     setCreating(false)
+    setImported(false)
+  }
+
+  /** 导出上游为分享模板：含 Base URL / 模型 / 备注（方便对方去拿 Key），不含 API Key */
+  const exportTpl = (u: Upstream) => {
+    const tpl = {
+      template: 'switchboard-upstream',
+      version: 1,
+      name: u.name.replace(/\(free\)/i, '').trim() || u.name,
+      protocol: u.protocol,
+      base_url: u.base_url,
+      priority: u.priority,
+      weight: u.weight,
+      timeout: u.timeout,
+      max_retries: u.max_retries,
+      models: u.models || [],
+      note: u.note || '',
+    }
+    const blob = new Blob([JSON.stringify(tpl, null, 2)], { type: 'application/json' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `switchboard-upstream-${u.name.replace(/[\\/:*?"<>| ]+/g, '-')}.json`
+    a.click()
+    URL.revokeObjectURL(a.href)
+    message.success('模板已导出（不含 API Key）')
+  }
+
+  /** 导入模板：预填新增表单，Key 留空由导入者自行填写 */
+  const importTpl = async (file: File) => {
+    try {
+      const t = JSON.parse(await file.text())
+      if (t.template !== 'switchboard-upstream') throw new Error('不是 Switchboard 上游模板（template 字段不符）')
+      closeEdit()
+      setCreating(true)
+      setImported(true)
+      form.setFieldsValue({
+        name: t.name || '',
+        protocol: t.protocol || 'anthropic',
+        base_url: t.base_url || '',
+        api_key: '',
+        priority: t.priority ?? 100,
+        weight: t.weight ?? 1,
+        timeout: t.timeout ?? 180,
+        max_retries: t.max_retries ?? 2,
+        models_text: (t.models || []).join(','),
+        note: t.note || '',
+        enabled: true,
+      })
+      message.success(`已导入模板「${t.name || '未命名'}」，请填写 API Key`)
+    } catch (e) {
+      message.error('导入失败：' + (e as Error).message)
+    }
+    return false
   }
 
   const submitEdit = async () => {
@@ -317,6 +371,9 @@ export default function Upstreams() {
             ]}
           />
           <Button icon={<ThunderboltOutlined />} onClick={healthAll}>批量体检</Button>
+          <Upload accept=".json,application/json" showUploadList={false} beforeUpload={(f) => importTpl(f as unknown as File)}>
+            <Button icon={<ImportOutlined />}>导入模板</Button>
+          </Upload>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openEdit(null)}>新增上游</Button>
         </Space>
       }
@@ -393,7 +450,7 @@ export default function Upstreams() {
           },
           {
             title: '操作',
-            width: 300,
+            width: 340,
             fixed: 'right',
             render: (_: unknown, u: Upstream) => (
               <Space size={2} wrap>
@@ -401,6 +458,9 @@ export default function Upstreams() {
                 <Button size="small" type="text" onClick={() => testUp(u)}>测试</Button>
                 <Button size="small" type="text" onClick={() => healthUp(u)}>体检</Button>
                 <Button size="small" type="text" onClick={() => pickModels(u)}>模型</Button>
+                <Tooltip title="导出分享模板（不含 API Key，含 Base URL）">
+                  <Button size="small" type="text" onClick={() => exportTpl(u)}>导出</Button>
+                </Tooltip>
                 <Button
                   size="small"
                   type="text"
@@ -426,7 +486,7 @@ export default function Upstreams() {
       </Typography.Paragraph>
 
       <Modal
-        title={editing ? '编辑上游' : '新增上游'}
+        title={editing ? '编辑上游' : imported ? '导入模板' : '新增上游'}
         open={creating || !!editing}
         onOk={submitEdit}
         onCancel={closeEdit}
@@ -434,6 +494,14 @@ export default function Upstreams() {
         width={620}
         destroyOnClose
       >
+        {imported && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12, fontSize: 12 }}
+            message="已按模板预填，API Key 需自行填写——注册/获取 Key 的网址见模板里的 Base URL 与备注。"
+          />
+        )}
         <UpstreamForm form={form} initial={editing} />
       </Modal>
 
