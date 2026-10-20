@@ -36,19 +36,47 @@ jobs:
         run: npm run build
         working-directory: frontend
 
-      - name: Build exe
-        run: python scripts/build_exe.py --no-clean
+      # ---- 客户端版：带桌面窗口（pywebview + WebView2），体积较大 ----
+      - name: Install GUI dependencies
+        run: |
+          pip install pywebview
+        continue-on-error: true
+
+      - name: Build client exe (desktop window)
+        run: python scripts/build_exe.py --variant gui --no-clean
         env:
           PYTHONIOENCODING: utf-8
 
-      - name: Rename artifact with version
+      # ---- 网页版：纯浏览器控制台，不含 GUI 依赖，体积更小 ----
+      - name: Build web exe (browser console)
+        run: python scripts/build_exe.py --variant web --no-clean
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Rename artifacts with version
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          Copy-Item release/Switchboard.exe "release/Switchboard-$tag.exe"
+          Copy-Item release/Switchboard.exe "release/Switchboard-Client-$tag.exe"
+          if (Test-Path release/Switchboard-Web.exe) {
+            Copy-Item release/Switchboard-Web.exe "release/Switchboard-Web-$tag.exe"
+          }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: release/Switchboard-*.exe
+          body: |
+            ## Switchboard ${{ github.ref_name }}
+
+            提供两个版本，功能完全一致，区别只在界面形态：
+
+            | 版本 | 文件 | 说明 |
+            |---|---|---|
+            | **客户端版** | `Switchboard-Client-<版本>.exe` | 双击直接弹出独立桌面窗口，不需要浏览器 |
+            | **网页版** | `Switchboard-Web-<版本>.exe` | 双击后自动打开浏览器控制台，体积更小 |
+
+            两个版本的数据目录都是 exe 同级的 `data/`，配置与日志互通。
+          files: |
+            release/Switchboard-Client-*.exe
+            release/Switchboard-Web-*.exe

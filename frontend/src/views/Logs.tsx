@@ -99,11 +99,11 @@ export default function Logs() {
         loading={!items}
         dataSource={items || []}
         pagination={false}
-        scroll={{ x: 1000 }}
+        scroll={{ x: 1240 }}
         columns={[
           { title: '时间', dataIndex: 'ts', width: 130, render: (v: number) => <span style={{ fontSize: 12, color: '#93a0b8', whiteSpace: 'nowrap' }}>{fmtTime(v)}</span> },
           { title: '状态', dataIndex: 'ok', width: 80, render: (v: boolean) => (v ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>) },
-          { title: '模型', dataIndex: 'request_model', render: (v: string) => <span className="mono" style={{ fontSize: 12 }}>{v || '-'}</span> },
+          { title: '模型', dataIndex: 'request_model', width: 160, ellipsis: true, render: (v: string) => <span className="mono" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{v || '-'}</span> },
           { title: '上游', dataIndex: 'upstream_name', width: 140, render: (v: string) => <span style={{ fontSize: 12 }}>{v || '-'}</span> },
           { title: '客户端', dataIndex: 'client_name', width: 110, render: (v: string) => <span style={{ fontSize: 12 }}>{v || '-'}</span> },
           {
@@ -127,6 +127,7 @@ export default function Logs() {
           {
             title: '错误',
             dataIndex: 'error',
+            width: 200,
             ellipsis: true,
             render: (v: string) =>
               v ? (

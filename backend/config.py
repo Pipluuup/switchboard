@@ -41,6 +41,7 @@ class Upstream(BaseModel):
     max_retries: int = 2
     models: list[str] = Field(default_factory=list)
     note: str = ""
+    key_url: str = ""  # 获取 / 申请 API Key 的网址（模板分享用，不含 Key 本身）
 
     # ---- 运行期状态（不持久化到 config.json） ----
     healthy: bool = True

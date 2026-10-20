@@ -100,11 +100,12 @@ export default function Keys() {
         loading={!list}
         dataSource={list || []}
         pagination={false}
-        scroll={{ x: 1000 }}
+        scroll={{ x: 1230 }}
         columns={[
           {
             title: '名称',
             dataIndex: 'name',
+            width: 160,
             render: (_: unknown, k: ClientKey) => (
               <>
                 <div style={{ fontWeight: 500 }}>{k.name}</div>
@@ -149,6 +150,7 @@ export default function Keys() {
           {
             title: '允许模型',
             dataIndex: 'allowed_models',
+            width: 160,
             render: (v: string[]) =>
               v && v.length ? (
                 <Space size={4}>{v.slice(0, 2).map((x) => <Tag key={x} color="blue">{x}</Tag>)}</Space>

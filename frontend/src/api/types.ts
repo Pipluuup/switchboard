@@ -59,6 +59,7 @@ export interface Upstream {
   max_retries: number
   models: string[]
   note: string
+  key_url?: string
   enabled: boolean
   healthy: boolean
   in_cooldown: boolean
@@ -79,6 +80,7 @@ export interface UpstreamInput {
   max_retries: number
   models: string[]
   note: string
+  key_url?: string
   enabled: boolean
 }
 

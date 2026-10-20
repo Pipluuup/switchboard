@@ -48,6 +48,20 @@ def exists(mod: str) -> bool:
         return False
 
 
+def clr_dll_dir() -> str | None:
+    """pythonnet 的 ClrLoader.dll 目录（.NET 互操作运行时，必须随 exe 分发）。"""
+    try:
+        import clr_loader  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    root = os.path.dirname(clr_loader.__file__)
+    for arch in ("amd64", "x86"):
+        p = os.path.join(root, "dlls", arch)
+        if os.path.isfile(os.path.join(p, "ClrLoader.dll")):
+            return p
+    return None
+
+
 def build_frontend() -> bool:
     """若存在 frontend/ 则先构建前端（产物输出到 web/），供打包携带。"""
     fe = os.path.join(ROOT, "frontend")
@@ -68,7 +82,8 @@ def build_frontend() -> bool:
     return True
 
 
-def build(mode: str, clean: bool) -> int:
+def build(mode: str, clean: bool, variant: str = "gui") -> int:
+    """variant: gui = 客户端版（带桌面窗口）；web = 网页版（纯浏览器控制台，体积小）。"""
     if not os.path.isfile(os.path.join(ROOT, "run.py")):
         print("  错误：未在项目根目录找到 run.py")
         return 1
@@ -84,12 +99,13 @@ def build(mode: str, clean: bool) -> int:
             print("  安装失败：" + ((r.stdout or "") + (r.stderr or ""))[-500:])
             return 1
 
+    name = NAME if variant == "gui" else NAME + "-Web"
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--onefile" if mode == "onefile" else "--onedir",
         "--console",                       # 保留控制台：能直接看到运行日志
-        "--name", NAME,
+        "--name", name,
         "--distpath", RELEASE,
         "--workpath", os.path.join(ROOT, "build", "pyinstaller"),
         "--specpath", os.path.join(ROOT, "build"),
@@ -105,6 +121,21 @@ def build(mode: str, clean: bool) -> int:
     for m in UVICORN_OPTIONAL:
         if exists(m):
             cmd += ["--hidden-import", m]
+    if variant == "gui":
+        # 桌面 GUI：pywebview + pythonnet（含 .NET 互操作运行时与 WebView2 后端）
+        cmd += ["--collect-submodules", "webview",
+                "--collect-submodules", "webview.platforms",
+                "--hidden-import", "clr_loader",
+                "--hidden-import", "clr"]
+        clr_dir = clr_dll_dir()
+        if clr_dir:
+            cmd += ["--add-data", clr_dir + os.pathsep + os.path.join("clr_loader", "dlls", os.path.basename(clr_dir))]
+    else:
+        # 网页版不含 GUI：排除 pywebview / pythonnet（体积可省约 35MB）
+        cmd += ["--exclude-module", "webview",
+                "--exclude-module", "pythonnet",
+                "--exclude-module", "clr",
+                "--exclude-module", "clr_loader"]
     cmd.append(os.path.join(ROOT, "run.py"))
 
     print(f"  模式：{mode}（{'单文件' if mode == 'onefile' else '单目录'}）")
@@ -115,22 +146,23 @@ def build(mode: str, clean: bool) -> int:
         print(f"\n  打包失败（exit {r.returncode}）")
         return r.returncode
 
-    exe = os.path.join(RELEASE, NAME + ".exe")
+    exe = os.path.join(RELEASE, name + ".exe")
     if mode == "onefile":
         ok = os.path.isfile(exe)
     else:
-        ok = os.path.isfile(os.path.join(RELEASE, NAME, NAME + ".exe"))
+        ok = os.path.isfile(os.path.join(RELEASE, name, name + ".exe"))
     if not ok:
         print("\n  打包结束但未找到预期的 exe")
         return 1
 
-    size = os.path.getsize(exe) if mode == "onefile" else _dir_size(os.path.join(RELEASE, NAME))
+    size = os.path.getsize(exe) if mode == "onefile" else _dir_size(os.path.join(RELEASE, name))
     print(f"\n  打包完成，用时 {time.time() - t0:.0f}s")
     if mode == "onefile":
         print(f"  产物：{exe}")
     else:
-        print(f"  产物：{os.path.join(RELEASE, NAME, NAME + '.exe')}")
+        print(f"  产物：{os.path.join(RELEASE, name, name + '.exe')}")
     print(f"  体积：{size / 1024 / 1024:.1f} MB")
+    print(f"  版本：{'客户端版（桌面窗口）' if variant == 'gui' else '网页版（浏览器控制台）'}")
     return 0
 
 
@@ -161,12 +193,14 @@ if __name__ == "__main__":
     p.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
     p.add_argument("--no-clean", action="store_true", help="跳过 --clean，复用构建缓存")
     p.add_argument("--purge", action="store_true", help="仅清理 build/ 中间产物")
+    p.add_argument("--variant", choices=["gui", "web"], default="gui",
+                   help="gui=客户端版（带桌面窗口，默认）；web=网页版（纯浏览器控制台，体积更小）")
     a = p.parse_args()
 
     print("=" * 58)
-    print("  Switchboard —— 打包 exe")
+    print(f"  Switchboard —— 打包 exe（{'客户端版' if a.variant == 'gui' else '网页版'}）")
     print("=" * 58)
     if a.purge:
         clean_artifacts()
         sys.exit(0)
-    sys.exit(build(a.mode, clean=not a.no_clean))
+    sys.exit(build(a.mode, clean=not a.no_clean, variant=a.variant))

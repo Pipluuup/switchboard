@@ -47,23 +47,29 @@ async function gateway() {
 /** 收集某站点全部 Cookie（含 httpOnly 与 CHIPS 分区存储），合并去重。
  *
  * 每个候选 URL 按「无分区 + 若干 topLevelSite 分区」多查几轮；
- * 按「长域在前、短路径在前」排序，与浏览器发送顺序一致。
+ * 再对每个 Cookie Store（常规 / 无痕）各扫一遍；长域在前、短路径在前排序。
  */
 async function collectCookies(site) {
+  const stores = await chrome.cookies.getAllCookieStores().catch(() => [])
+  const storeIds = stores.length ? stores.map((s) => s.id) : [undefined]
   const partitions = [
     undefined,
     { topLevelSite: `https://${site.domain}`, hasCrossSiteAncestor: false },
     { topLevelSite: `https://${site.domain}`, hasCrossSiteAncestor: true },
     { topLevelSite: site.apiOrigin, hasCrossSiteAncestor: false },
+    { topLevelSite: site.apiOrigin, hasCrossSiteAncestor: true },
     {},
   ]
   const map = new Map()
-  for (const url of site.urls) {
-    for (const pk of partitions) {
-      const q = pk === undefined ? { url } : { url, partitionKey: pk }
-      let found = []
-      try { found = await chrome.cookies.getAll(q) } catch { /* 分区查询旧内核不支持 */ }
-      for (const c of found) map.set(c.name + '|' + c.domain + '|' + c.path, c)
+  for (const sid of storeIds) {
+    for (const url of site.urls) {
+      for (const pk of partitions) {
+        const q = { url, ...(pk === undefined ? {} : { partitionKey: pk }) }
+        if (sid !== undefined) q.storeId = sid
+        let found = []
+        try { found = await chrome.cookies.getAll(q) } catch { /* 分区查询旧内核不支持 */ }
+        for (const c of found) map.set(c.name + '|' + c.domain + '|' + c.path, c)
+      }
     }
   }
   return [...map.values()].sort(
@@ -92,7 +98,8 @@ async function writeCookie(key) {
       return
     }
     if (!hasLogin) {
-      status(`✗ 缺少登录态 Cookie（如 digest / sessionid）。请确认：①本扩展和登录用的是同一个浏览器；\n②${site.urls[1]} 处于已登录状态，然后重试。`, 'err')
+      const shown = names.slice(0, 14).join(', ') || '（0 个）'
+      status(`✗ 读到 ${names.length} 个 Cookie，但没有登录态（digest/access/sessionid 等）：\n${shown}\n请确认本扩展与登录页在同一个浏览器 Profile，且该页面已登录。`, 'err')
       return
     }
     const { base, token } = await gateway()

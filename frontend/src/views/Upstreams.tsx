@@ -10,10 +10,37 @@ import { fmtNum } from '../utils/format'
 
 type UpstreamFormValues = UpstreamInput & { models_text?: string }
 
+/** 已知服务商的 Key 申请页（key_url 为空时按 Base URL 推断，用户填了 key_url 则以其为准） */
+const KNOWN_KEY_URLS: { match: string; url: string }[] = [
+  { match: 'agnes-ai', url: 'https://platform.agnes-ai.cn/login' },
+  { match: 'sensenova', url: 'https://platform.sensenova.cn/login' },
+  { match: 'deepseek', url: 'https://platform.deepseek.com/api_keys' },
+  { match: 'moonshot', url: 'https://platform.moonshot.cn/console/api-keys' },
+  { match: 'siliconflow', url: 'https://cloud.siliconflow.cn/account/ak' },
+  { match: 'volcengine', url: 'https://console.volcengine.com/ark/region:cn-beijing/apiKey' },
+  { match: 'dashscope', url: 'https://bailian.console.aliyun.com/?apiKey=1' },
+  { match: 'openrouter', url: 'https://openrouter.ai/keys' },
+  { match: 'groq', url: 'https://console.groq.com/keys' },
+  { match: 'together', url: 'https://api.together.xyz/settings/api-keys' },
+]
+
+function guessKeyUrl(baseUrl: string, keyUrl: string): string {
+  if (keyUrl) return keyUrl
+  const b = (baseUrl || '').toLowerCase()
+  return KNOWN_KEY_URLS.find((k) => b.includes(k.match))?.url || ''
+}
+
 function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues>; initial: Upstream | null }) {
   const { message } = App.useApp()
   const [probing, setProbing] = useState(false)
   const [probe, setProbe] = useState<{ open: boolean; models: string[]; selected: string[] }>({ open: false, models: [], selected: [] })
+  // 「获取key」链接的地址：优先用表单里的 key_url，否则按 Base URL 推断
+  const keyUrlWatch = Form.useWatch('key_url', form)
+  const baseUrlWatch = Form.useWatch('base_url', form)
+  const [keyUrl, setKeyUrl] = useState(guessKeyUrl(initial?.base_url || '', initial?.key_url || ''))
+  useEffect(() => {
+    setKeyUrl(guessKeyUrl(baseUrlWatch || '', (keyUrlWatch || '').trim()))
+  }, [keyUrlWatch, baseUrlWatch])
 
   const probeModels = async () => {
     const v = form.getFieldsValue()
@@ -67,14 +94,29 @@ function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues
       <Form.Item name="base_url" label="Base URL" initialValue={initial?.base_url} rules={[{ required: true, message: 'Base URL 不能为空' }]}>
         <Input placeholder="https://api.commandcode.dev/v1" />
       </Form.Item>
-      {/* 链接必须放在 Form.Item 外面：带 name 的 Form.Item 只允许一个子元素，
-          多个子元素会导致 Key 输入框不绑定表单（输入的值丢失） */}
-      {(initial?.base_url || '').includes('agnes-ai') && (
-        <div style={{ fontSize: 12, color: '#93a0b8', marginBottom: 4 }}>
-          免费 Key 获取：<a href="https://platform.agnes-ai.cn/login" target="_blank" rel="noreferrer">https://platform.agnes-ai.cn/login ↗</a>
-        </div>
+      {/* 仅新增时提供「Key 获取网址」输入框；编辑已有节点时不显示（链接仍会自动推断） */}
+      {!initial && (
+        <Form.Item
+          name="key_url"
+          label="Key 获取网址（留空则按 Base URL 自动推断，导出模板时带上）"
+        >
+          <Input placeholder="https://platform.agnes-ai.cn/login" />
+        </Form.Item>
       )}
-      <Form.Item name="api_key" label="API Key / Token" initialValue={initial?.api_key_masked === '未设置' ? '' : undefined}>
+      <Form.Item
+        name="api_key"
+        label={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            API Key / Token
+            {keyUrl && (
+              <a href={keyUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 400 }}>
+                获取key
+              </a>
+            )}
+          </span>
+        }
+        initialValue={initial?.api_key_masked === '未设置' ? '' : undefined}
+      >
         <Input.Password placeholder={initial ? '留空保持原 Key 不变' : 'sk-...'} autoComplete="new-password" />
       </Form.Item>
       <Space style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, width: '100%' }} align="start">
@@ -174,6 +216,7 @@ export default function Upstreams() {
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelSel, setModelSel] = useState<string[]>([])
   const [imported, setImported] = useState(false)
+  const [importedKeyUrl, setImportedKeyUrl] = useState('')
 
   const load = () => {
     GET<Upstream[]>('/api/upstreams')
@@ -196,6 +239,7 @@ export default function Upstreams() {
         max_retries: u.max_retries,
         models_text: (u.models || []).join(','),
         note: u.note,
+        key_url: u.key_url || '',
         enabled: u.enabled,
       })
     } else {
@@ -208,6 +252,7 @@ export default function Upstreams() {
     setEditing(null)
     setCreating(false)
     setImported(false)
+    setImportedKeyUrl('')
   }
 
   /** 导出上游为分享模板：含 Base URL / 模型 / 备注（方便对方去拿 Key），不含 API Key */
@@ -224,6 +269,7 @@ export default function Upstreams() {
       max_retries: u.max_retries,
       models: u.models || [],
       note: u.note || '',
+      key_url: u.key_url || '',
     }
     const blob = new Blob([JSON.stringify(tpl, null, 2)], { type: 'application/json' })
     const a = document.createElement('a')
@@ -242,6 +288,7 @@ export default function Upstreams() {
       closeEdit()
       setCreating(true)
       setImported(true)
+      setImportedKeyUrl(t.key_url || '')
       form.setFieldsValue({
         name: t.name || '',
         protocol: t.protocol || 'anthropic',
@@ -253,9 +300,13 @@ export default function Upstreams() {
         max_retries: t.max_retries ?? 2,
         models_text: (t.models || []).join(','),
         note: t.note || '',
+        key_url: t.key_url || '',
         enabled: true,
       })
-      message.success(`已导入模板「${t.name || '未命名'}」，请填写 API Key`)
+      message.success(
+        `已导入模板「${t.name || '未命名'}」，请填写 API Key` +
+          (t.key_url ? `（申请地址：${t.key_url}）` : ''),
+      )
     } catch (e) {
       message.error('导入失败：' + (e as Error).message)
     }
@@ -275,6 +326,8 @@ export default function Upstreams() {
       max_retries: Number(v.max_retries) || 0,
       models: v.models_text ? v.models_text.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
       note: v.note || '',
+      // 编辑时表单不显示 key_url，别把已有值清空
+      key_url: v.key_url !== undefined ? v.key_url.trim() : (editing?.key_url || ''),
       enabled: !!v.enabled,
     }
     try {
@@ -384,7 +437,7 @@ export default function Upstreams() {
         loading={!list}
         dataSource={list ? [...list].filter((u) => listFilter === 'all' || (listFilter === 'free') === isFree(u)).sort((a, b) => Number(isFree(b)) - Number(isFree(a)) || a.name.localeCompare(b.name)) : []}
         pagination={false}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1320 }}
         columns={[
           {
             title: '名称',
@@ -421,7 +474,11 @@ export default function Upstreams() {
           {
             title: 'API Key',
             dataIndex: 'api_key_masked',
-            render: (v: string) => <span className="mono" style={{ fontSize: 11.5 }}>{v || '未设置'}</span>,
+            width: 170,
+            ellipsis: true,
+            render: (v: string) => (
+              <span className="mono" style={{ fontSize: 11.5, whiteSpace: 'nowrap' }}>{v || '未设置'}</span>
+            ),
           },
           { title: '优先级', dataIndex: 'priority', width: 64 },
           {
@@ -445,6 +502,7 @@ export default function Upstreams() {
           {
             title: '最近错误',
             dataIndex: 'last_error',
+            width: 180,
             ellipsis: true,
             render: (v: string) => v ? <Typography.Text type="danger" style={{ fontSize: 11.5 }} ellipsis={{ tooltip: v }}>{v}</Typography.Text> : <span style={{ color: '#5c6880' }}>-</span>,
           },
@@ -499,7 +557,17 @@ export default function Upstreams() {
             type="info"
             showIcon
             style={{ marginBottom: 12, fontSize: 12 }}
-            message="已按模板预填，API Key 需自行填写——注册/获取 Key 的网址见模板里的 Base URL 与备注。"
+            message={
+              <span>
+                已按模板预填，API Key 需自行填写。
+                {importedKeyUrl && (
+                  <>
+                    {' '}获取 Key：
+                    <a href={importedKeyUrl} target="_blank" rel="noreferrer">{importedKeyUrl} ↗</a>
+                  </>
+                )}
+              </span>
+            }
           />
         )}
         <UpstreamForm form={form} initial={editing} />

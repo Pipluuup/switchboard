@@ -1,10 +1,12 @@
 """Switchboard 启动脚本。
 
 用法：
-    python run.py                      # 按配置启动
+    python run.py                      # 按配置启动（默认开桌面窗口）
     python run.py --port 9000          # 覆盖端口
     python run.py --host 0.0.0.0       # 允许局域网访问（请同时设置管理口令）
     python run.py --no-browser         # 不自动打开浏览器
+    python run.py --no-gui             # 不开桌面窗口（纯后台）
+    python run.py --browser            # 强制用浏览器打开（不开桌面窗口）
 
 打包成 exe 后同样支持以上参数：Switchboard.exe --port 9000
 """
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -68,6 +71,8 @@ def main():
     parser.add_argument("--host", default=None, help="监听地址")
     parser.add_argument("--port", type=int, default=None, help="监听端口")
     parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
+    parser.add_argument("--no-gui", action="store_true", help="不开桌面窗口（纯后台运行）")
+    parser.add_argument("--browser", action="store_true", help="用浏览器打开（不开桌面窗口）")
     args = parser.parse_args()
 
     from backend.config import store  # noqa: PLC0415
@@ -78,7 +83,25 @@ def main():
         st.host = args.host
     if args.port:
         st.port = args.port
-    if args.no_browser:
+
+    # 桌面窗口优先：默认开 GUI（不开浏览器）；--browser 强制浏览器；--no-gui 纯后台
+    from backend import gui  # noqa: PLC0415
+
+    # 网页版 exe（Switchboard-Web.exe）不带 GUI 依赖，靠文件名识别为纯浏览器形态
+    is_web_build = bool(os.environ.get("SWITCHBOARD_WEB_BUILD")) or (
+        getattr(sys, "frozen", False)
+        and os.path.basename(sys.executable).lower().startswith("switchboard-web")
+    )
+
+    use_gui = not args.no_gui and not args.browser and not is_web_build
+    if use_gui and not gui.available():
+        use_gui = False
+        print("  [提示] 未安装 pywebview，改用浏览器打开（pip install pywebview 可启用桌面窗口）")
+    if use_gui:
+        st.auto_open_browser = False   # 桌面窗口取代浏览器
+    elif is_web_build:
+        st.auto_open_browser = True    # 网页版始终自动开浏览器控制台
+    elif args.no_browser:
         st.auto_open_browser = False
 
     # 端口已有实例在跑：直接弹网页退出，不二次绑定（exe 双击场景的核心路径）
@@ -86,6 +109,11 @@ def main():
     if state is True:
         url = f"http://{'127.0.0.1' if st.host in ('', '0.0.0.0', '::') else st.host}:{st.port}/"
         print(f"  检测到服务已在运行：{url}")
+        if use_gui:
+            # 已有实例：直接把它开成桌面窗口（不再二次绑定端口）
+            print("  正在打开桌面窗口…")
+            gui.open_console(url)
+            return 0
         if not args.no_browser and st.auto_open_browser:
             import webbrowser  # noqa: PLC0415
             webbrowser.open(url)
@@ -113,7 +141,31 @@ def main():
         print("  [提示] 未设置管理口令，仅建议在本机 127.0.0.1 使用")
     print("=" * 58)
 
-    uvicorn.run(app, host=st.host, port=st.port, log_level="info")
+    host = st.host if st.host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    ui_url = f"http://{host}:{st.port}/"
+
+    if not use_gui:
+        uvicorn.run(app, host=st.host, port=st.port, log_level="info")
+        return 0
+
+    # 桌面模式：uvicorn 放后台线程，GUI 线程跑窗口事件循环
+    server = uvicorn.Server(uvicorn.Config(app, host=st.host, port=st.port, log_level="info"))
+    t = threading.Thread(target=server.run, name="switchboard-server", daemon=True)
+    t.start()
+    if not gui.wait_ready(ui_url, timeout_s=25.0):
+        print(f"  [错误] 服务未能在 25 秒内就绪，放弃打开窗口")
+        return 1
+    print("  正在打开桌面窗口…")
+    try:
+        gui.open_console(ui_url)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [错误] 打开窗口失败：{e}")
+        import webbrowser  # noqa: PLC0415
+        webbrowser.open(ui_url)
+        return 0
+    # 窗口关闭 = 退出整个程序（服务随之停止）
+    server.should_exit = True
+    return 0
 
 
 if __name__ == "__main__":
