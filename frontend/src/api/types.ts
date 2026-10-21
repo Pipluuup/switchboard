@@ -47,10 +47,13 @@ export interface Usage {
   retention_days: number
 }
 
+/** 上游协议：与后端 backend/config.py 的 Protocol 字面量保持一致 */
+export type UpstreamProtocol = 'anthropic' | 'openai' | 'responses'
+
 export interface Upstream {
   id: string
   name: string
-  protocol: 'anthropic' | 'openai'
+  protocol: UpstreamProtocol
   base_url: string
   api_key_masked: string
   priority: number
@@ -71,7 +74,7 @@ export interface Upstream {
 
 export interface UpstreamInput {
   name: string
-  protocol: string
+  protocol: UpstreamProtocol
   base_url: string
   api_key: string
   priority: number
