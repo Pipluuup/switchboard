@@ -178,7 +178,9 @@ export interface Settings {
   caveman_keep_recent: number
   caveman_min_chars: number
   caveman_compress_system: boolean
+  caveman_cache_aware?: boolean
   voice_enabled: boolean
+  voice_ignore_cache?: boolean
 }
 
 export interface Quickstart {

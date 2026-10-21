@@ -324,12 +324,17 @@ async def handle_request(request: Request, in_protocol: str):
     session_id = opencode_session_id(request, body, ck)
 
     # ---- Caveman 引擎：转发前瘦身（原地修改 body；日志详情记录的仍是原始请求） ----
-    _, caveman_saved = caveman.compress_body(body)
-    voice_on = caveman.inject_voice(body)
+    # 缓存感知：候选里只要有支持 prompt cache 的上游，就走弱压缩模式——
+    # 压缩旧消息会改写「system + 早期消息」这段可缓存前缀，命中价失效的损失
+    # 可能大于压缩收益（DeepSeek 命中价约为原价 1/10）。宁可少省，也不改前缀。
+    cache_aware = any(caveman.upstream_supports_cache(u) for u in cands)
+    _, caveman_saved = caveman.compress_body(body, cache_aware=cache_aware)
+    voice_on = caveman.inject_voice(body, cache_aware=cache_aware)
     if voice_on:
         print(f"[caveman] {model} voice 规则已注入（Say less）")
     if caveman_saved:
-        print(f"[caveman] {model} <- {ck.name if ck else '匿名'} 瘦身 {caveman_saved} 字符")
+        tag = "（缓存优先）" if cache_aware else ""
+        print(f"[caveman] {model} <- {ck.name if ck else '匿名'} 瘦身 {caveman_saved} 字符{tag}")
     tried: list[str] = []
     last_err = ""
     last_status = 0

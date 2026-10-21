@@ -10,37 +10,96 @@ import { fmtNum } from '../utils/format'
 
 type UpstreamFormValues = UpstreamInput & { models_text?: string }
 
-/** 已知服务商的 Key 申请页（key_url 为空时按 Base URL 推断，用户填了 key_url 则以其为准） */
-const KNOWN_KEY_URLS: { match: string; url: string }[] = [
-  { match: 'agnes-ai', url: 'https://platform.agnes-ai.cn/login' },
-  { match: 'sensenova', url: 'https://platform.sensenova.cn/login' },
-  { match: 'deepseek', url: 'https://platform.deepseek.com/api_keys' },
-  { match: 'moonshot', url: 'https://platform.moonshot.cn/console/api-keys' },
-  { match: 'siliconflow', url: 'https://cloud.siliconflow.cn/account/ak' },
-  { match: 'volcengine', url: 'https://console.volcengine.com/ark/region:cn-beijing/apiKey' },
-  { match: 'dashscope', url: 'https://bailian.console.aliyun.com/?apiKey=1' },
-  { match: 'openrouter', url: 'https://openrouter.ai/keys' },
-  { match: 'groq', url: 'https://console.groq.com/keys' },
-  { match: 'together', url: 'https://api.together.xyz/settings/api-keys' },
+/** 内置提供商：选中后自动填 Base URL 与 Key 申请页；「自定义」则全部手填 */
+type Provider = {
+  value: string
+  label: string
+  baseUrl: string
+  keyUrl: string
+  protocol?: 'anthropic' | 'openai'
+  /** 反查用的域名片段（Base URL 命中即视为该提供商） */
+  host: string
+}
+
+const PROVIDERS: Provider[] = [
+  { value: 'commandcode', label: 'CommandCode（GOAT）', baseUrl: 'https://api.commandcode.ai/provider/v1', keyUrl: 'https://commandcode.ai/settings', protocol: 'openai', host: 'commandcode.ai' },
+  { value: 'opencode-go', label: 'OpenCode Go / Zen', baseUrl: 'https://opencode.ai/inference/go/v1', keyUrl: 'https://opencode.ai/console', protocol: 'openai', host: 'opencode.ai' },
+  { value: 'agnes', label: 'Agnes AI', baseUrl: 'https://api.agnes-ai.cn/v1', keyUrl: 'https://platform.agnes-ai.cn/login', protocol: 'openai', host: 'agnes-ai' },
+  { value: 'sensenova', label: 'SenseNova（商汤）', baseUrl: 'https://token.sensenova.cn/v1', keyUrl: 'https://platform.sensenova.cn/login', protocol: 'openai', host: 'sensenova' },
+  { value: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', keyUrl: 'https://platform.deepseek.com/api_keys', protocol: 'anthropic', host: 'deepseek' },
+  { value: 'moonshot', label: 'Moonshot（Kimi）', baseUrl: 'https://api.moonshot.cn/v1', keyUrl: 'https://platform.moonshot.cn/console/api-keys', protocol: 'openai', host: 'moonshot' },
+  { value: 'siliconflow', label: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', keyUrl: 'https://cloud.siliconflow.cn/account/ak', protocol: 'openai', host: 'siliconflow' },
+  { value: 'volcengine', label: '火山方舟', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', keyUrl: 'https://console.volcengine.com/ark/region:cn-beijing/apiKey', protocol: 'openai', host: 'volces' },
+  { value: 'dashscope', label: '阿里百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1', protocol: 'openai', host: 'dashscope' },
+  { value: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', keyUrl: 'https://openrouter.ai/keys', protocol: 'openai', host: 'openrouter' },
+  { value: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', keyUrl: 'https://console.groq.com/keys', protocol: 'openai', host: 'groq' },
+  { value: 'together', label: 'Together AI', baseUrl: 'https://api.together.xyz/v1', keyUrl: 'https://api.together.xyz/settings/api-keys', protocol: 'openai', host: 'together' },
+  { value: 'zhipu', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', protocol: 'openai', host: 'bigmodel.cn' },
+  { value: 'baichuan', label: '百川智能', baseUrl: 'https://api.baichuan-ai.com/v1', keyUrl: 'https://platform.baichuan-ai.com/console/apikey', protocol: 'openai', host: 'baichuan-ai' },
+  { value: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', protocol: 'openai', host: 'minimax' },
+  { value: 'qianfan', label: '百度千帆', baseUrl: 'https://qianfan.baidubce.com/v2', keyUrl: 'https://console.bce.baidu.com/qianfan/ais/console/apikey', protocol: 'openai', host: 'baidubce' },
+  { value: 'stepfun', label: '阶跃星辰', baseUrl: 'https://api.stepfun.com/v1', keyUrl: 'https://platform.stepfun.com/console/api_keys', protocol: 'openai', host: 'stepfun' },
+  { value: 'infini', label: '无问芯穹', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', keyUrl: 'https://cloud.infini-ai.com/identity/token', protocol: 'openai', host: 'infini-ai' },
+  { value: 'aihubmix', label: 'AiHubMix', baseUrl: 'https://aihubmix.com/v1', keyUrl: 'https://aihubmix.com/token', protocol: 'openai', host: 'aihubmix' },
+  { value: 'oatify', label: 'Oatify', baseUrl: 'https://api.oatify.com/v1', keyUrl: 'https://oatify.com/dashboard', protocol: 'openai', host: 'oatify' },
+  { value: 'nvidia', label: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', keyUrl: 'https://build.nvidia.com/keys', protocol: 'openai', host: 'nvidia' },
+  { value: 'anthropic', label: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com/v1', keyUrl: 'https://console.anthropic.com/settings/keys', protocol: 'anthropic', host: 'api.anthropic.com' },
+  { value: 'openai', label: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', keyUrl: 'https://platform.openai.com/api-keys', protocol: 'openai', host: 'api.openai.com' },
+  { value: 'gemini', label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', keyUrl: 'https://aistudio.google.com/app/apikey', protocol: 'openai', host: 'generativelanguage' },
+  { value: 'mistral', label: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', keyUrl: 'https://console.mistral.ai/api-keys', protocol: 'openai', host: 'mistral.ai' },
+  { value: 'xai', label: 'xAI（Grok）', baseUrl: 'https://api.x.ai/v1', keyUrl: 'https://console.x.ai', protocol: 'openai', host: 'api.x.ai' },
+  { value: 'cerebras', label: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', keyUrl: 'https://cloud.cerebras.ai', protocol: 'openai', host: 'cerebras.ai' },
+  { value: 'fireworks', label: 'Fireworks AI', baseUrl: 'https://api.fireworks.ai/inference/v1', keyUrl: 'https://fireworks.ai/api-keys', protocol: 'openai', host: 'fireworks.ai' },
+  { value: 'anyrouter', label: 'AnyRouter', baseUrl: 'https://anyrouter.top/v1', keyUrl: 'https://anyrouter.top', protocol: 'openai', host: 'anyrouter' },
+  { value: 'hf', label: 'HuggingFace', baseUrl: 'https://router.huggingface.co/v1', keyUrl: 'https://huggingface.co/settings/tokens', protocol: 'openai', host: 'huggingface.co' },
+  { value: 'lmstudio', label: 'LM Studio（本地）', baseUrl: 'http://127.0.0.1:1234/v1', keyUrl: '', protocol: 'openai', host: '127.0.0.1:1234' },
+  { value: 'ollama', label: 'Ollama（本地）', baseUrl: 'http://127.0.0.1:11434/v1', keyUrl: '', protocol: 'openai', host: '11434' },
+  { value: 'custom', label: '自定义', baseUrl: '', keyUrl: '', host: '' },
 ]
 
-function guessKeyUrl(baseUrl: string, keyUrl: string): string {
-  if (keyUrl) return keyUrl
+const CUSTOM = 'custom'
+
+/** 从 Base URL 反查所属提供商（编辑旧节点时用） */
+function providerOf(baseUrl: string): Provider | null {
   const b = (baseUrl || '').toLowerCase()
-  return KNOWN_KEY_URLS.find((k) => b.includes(k.match))?.url || ''
+  if (!b) return null
+  return PROVIDERS.find((p) => p.host && b.includes(p.host)) || null
 }
 
 function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues>; initial: Upstream | null }) {
   const { message } = App.useApp()
   const [probing, setProbing] = useState(false)
   const [probe, setProbe] = useState<{ open: boolean; models: string[]; selected: string[] }>({ open: false, models: [], selected: [] })
-  // 「获取key」链接的地址：优先用表单里的 key_url，否则按 Base URL 推断
-  const keyUrlWatch = Form.useWatch('key_url', form)
-  const baseUrlWatch = Form.useWatch('base_url', form)
-  const [keyUrl, setKeyUrl] = useState(guessKeyUrl(initial?.base_url || '', initial?.key_url || ''))
-  useEffect(() => {
-    setKeyUrl(guessKeyUrl(baseUrlWatch || '', (keyUrlWatch || '').trim()))
-  }, [keyUrlWatch, baseUrlWatch])
+  // 提供商选择：新增时默认「自定义」，编辑时按 Base URL 反查
+  const [provider, setProvider] = useState<string>(() => {
+    if (!initial) return CUSTOM
+    return providerOf(initial.base_url)?.value || CUSTOM
+  })
+  const [customKeyUrl, setCustomKeyUrl] = useState(initial?.key_url || '')
+  // 生效的 Key 申请页：自定义 → 手填的；内置 → 提供商自带
+  const [keyUrl, setKeyUrl] = useState(() => {
+    if (initial?.key_url) return initial.key_url
+    return providerOf(initial?.base_url || '')?.keyUrl || ''
+  })
+
+  const pickProvider = (v: string) => {
+    setProvider(v)
+    const p = PROVIDERS.find((x) => x.value === v)
+    if (!p || v === CUSTOM) {
+      // 切到自定义：把当前生效的网址带进表单继续编辑
+      const cur = (form.getFieldValue('key_url') || customKeyUrl || keyUrl || '').trim()
+      form.setFieldValue('key_url', cur)
+      setCustomKeyUrl(cur)
+      setKeyUrl(cur)
+      return
+    }
+    form.setFieldsValue({
+      base_url: p.baseUrl,
+      key_url: p.keyUrl,
+      protocol: p.protocol || form.getFieldValue('protocol') || 'openai',
+    })
+    setKeyUrl(p.keyUrl)
+  }
 
   const probeModels = async () => {
     const v = form.getFieldsValue()
@@ -78,9 +137,21 @@ function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues
   return (
     <>
     <Form form={form} layout="vertical" initialValues={initial ?? undefined}>
-      <Space style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, width: '100%' }} align="start">
+      <Space style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, width: '100%' }} align="start">
         <Form.Item name="name" label="名称" initialValue={initial?.name}>
           <Input placeholder="如：CommandCode Goat 主节点" />
+        </Form.Item>
+        <Form.Item label="提供商">
+          <Select
+            value={provider}
+            onChange={pickProvider}
+            showSearch
+            allowClear={false}
+            optionFilterProp="label"
+            placeholder="选择提供商（可搜索）"
+            options={PROVIDERS.map((p) => ({ value: p.value, label: p.label }))}
+            notFoundContent="没有匹配的提供商，选「自定义」手填"
+          />
         </Form.Item>
         <Form.Item name="protocol" label="协议" initialValue={initial?.protocol ?? 'anthropic'}>
           <Select
@@ -94,13 +165,16 @@ function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues
       <Form.Item name="base_url" label="Base URL" initialValue={initial?.base_url} rules={[{ required: true, message: 'Base URL 不能为空' }]}>
         <Input placeholder="https://api.commandcode.dev/v1" />
       </Form.Item>
-      {/* 仅新增时提供「Key 获取网址」输入框；编辑已有节点时不显示（链接仍会自动推断） */}
-      {!initial && (
+      {/* 仅「自定义」提供商时需要手填 Key 获取网址；内置提供商自带申请页 */}
+      {provider === CUSTOM && (
         <Form.Item
           name="key_url"
-          label="Key 获取网址（留空则按 Base URL 自动推断，导出模板时带上）"
+          label="Key 获取网址（可留空；导出模板时会带上，方便对方自行申请）"
         >
-          <Input placeholder="https://platform.agnes-ai.cn/login" />
+          <Input
+            placeholder="https://platform.example.com/api-keys"
+            onChange={(e) => setCustomKeyUrl(e.target.value.trim())}
+          />
         </Form.Item>
       )}
       <Form.Item
@@ -108,11 +182,16 @@ function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues
         label={
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
             API Key / Token
-            {keyUrl && (
-              <a href={keyUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 400 }}>
-                获取key
-              </a>
-            )}
+            <a
+              onClick={(e) => {
+                e.preventDefault()
+                if (keyUrl) window.open(keyUrl, '_blank', 'noreferrer')
+                else message.warning('该提供商没有配置 Key 获取网址——请在上方「Key 获取网址」里填一个')
+              }}
+              style={{ fontSize: 12, fontWeight: 400, cursor: 'pointer' }}
+            >
+              获取key
+            </a>
           </span>
         }
         initialValue={initial?.api_key_masked === '未设置' ? '' : undefined}
@@ -239,7 +318,7 @@ export default function Upstreams() {
         max_retries: u.max_retries,
         models_text: (u.models || []).join(','),
         note: u.note,
-        key_url: u.key_url || '',
+        key_url: u.key_url || providerOf(u.base_url)?.keyUrl || '',
         enabled: u.enabled,
       })
     } else {
@@ -326,8 +405,8 @@ export default function Upstreams() {
       max_retries: Number(v.max_retries) || 0,
       models: v.models_text ? v.models_text.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
       note: v.note || '',
-      // 编辑时表单不显示 key_url，别把已有值清空
-      key_url: v.key_url !== undefined ? v.key_url.trim() : (editing?.key_url || ''),
+      // key_url：内置提供商由 pickProvider 写入 store，自定义由用户填写
+      key_url: (v.key_url !== undefined ? v.key_url : editing?.key_url) || '',
       enabled: !!v.enabled,
     }
     try {

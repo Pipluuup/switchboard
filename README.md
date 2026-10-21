@@ -25,7 +25,7 @@
 - 📋 **上游模板** — 每个节点可导出分享模板（含 Base URL / 模型 / 备注，不含 Key），导入即预填新建表单
 - 🔑 **密钥分发** — 多客户端独立 Key，单独限速 / 限模型 / 随时停用
 - 📊 **用量统计** — Token / 延迟 / 成功率，5h · 7d · 30d 滚动窗口
-- 🗜️ **Token 优化** — Caveman 引擎转发前压缩输入（Read less）+ Say less 输出约束，日志逐条展示节省
+- 🗜️ **Token 优化** — Caveman 引擎转发前压缩输入（Read less）+ Say less 输出约束 + 缓存感知（保护 prompt cache），日志逐条展示节省
 - 🔍 **请求详情日志** — 每次请求的完整请求体 / 响应摘要可随时回看（默认可关）
 - 📈 **Plan 实时查询** — OpenCode Go / 火山方舟官方配额实时展示，登录 Cookie 由浏览器扩展一键写入
 - 🖥️ **Web 控制台** — 全图形化配置，改端口即改即生效
@@ -65,6 +65,26 @@ export ANTHROPIC_API_KEY="你的客户端Key"
 | **RTK** | 客户端侧 | [rtk-ai/rtk](https://github.com/rtk-ai/rtk) 把 `git` / 测试 / 构建命令输出压缩 60–90%（`winget install rtk-ai.rtk`） |
 
 请求日志「优化」列会标注每次请求实际瘦身的字符数。
+
+### 🧊 缓存感知（Cache-Aware）
+
+压缩旧消息会改写「system + 早期消息」这段**可缓存前缀**，上游的 prompt cache 随之失效。
+对命中价差大的上游（如 DeepSeek 命中价约为原价 1/10），缓存失效的损失可能大于压缩收益。
+
+因此「Token 优化」页提供**缓存感知**开关（默认开启）：当目标上游支持 prompt cache 时
+（Anthropic / OpenAI / DeepSeek / Moonshot / 智谱 / 火山方舟 / Agnes / SiliconFlow 等），
+引擎自动进入缓存优先模式——
+
+- 保留窗口自动放大一倍、压缩阈值提高一倍
+- 改用**轻量压缩**：只折叠空白 + 保留头尾，不动 JSON / 日志结构
+- **不压缩 system**（system 通常是缓存主体）
+- **默认不注入 Say less**（改写 system 同样会破坏前缀；需要时可在页面单独开启）
+
+这样压缩对缓存前缀的扰动降到最低，缓存重建后能更快恢复稳定。
+
+> 实现参考：OmniRoute 的 `cachingAware.ts`（`detectCachingContext` + `getCacheAwareStrategy`）。
+> 它同样强调：**光看有没有 `cache_control` 标记是不够的**——OpenAI / Codex 这类
+> 自动前缀缓存的 provider 不带任何标记，只靠标记判断会导致前缀被改写、缓存必然失效。
 
 ## 📈 Plan 实时查询
 

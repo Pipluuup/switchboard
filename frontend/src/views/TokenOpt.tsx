@@ -11,7 +11,9 @@ type Draft = {
   caveman_keep_recent: number
   caveman_min_chars: number
   caveman_compress_system: boolean
+  caveman_cache_aware: boolean
   voice_enabled: boolean
+  voice_ignore_cache: boolean
 }
 
 type RtkStatus = { installed: boolean; version: string; path?: string; error?: string }
@@ -152,7 +154,9 @@ export default function TokenOpt() {
           caveman_keep_recent: s.caveman_keep_recent || 4,
           caveman_min_chars: s.caveman_min_chars || 400,
           caveman_compress_system: !!s.caveman_compress_system,
+          caveman_cache_aware: s.caveman_cache_aware !== false,
           voice_enabled: !!s.voice_enabled,
+          voice_ignore_cache: !!s.voice_ignore_cache,
         }),
       )
       .catch((e) => message.error('加载设置失败：' + e.message))
@@ -168,7 +172,9 @@ export default function TokenOpt() {
         caveman_keep_recent: Number(draft.caveman_keep_recent) || 4,
         caveman_min_chars: Number(draft.caveman_min_chars) || 400,
         caveman_compress_system: draft.caveman_compress_system,
+        caveman_cache_aware: draft.caveman_cache_aware,
         voice_enabled: draft.voice_enabled,
+        voice_ignore_cache: draft.voice_ignore_cache,
       })
       message.success('已保存')
     } catch (e) {
@@ -235,6 +241,16 @@ export default function TokenOpt() {
             <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>
               默认不压缩 system：改写它会打断上游的 prompt cache，反而更费钱。
             </Typography.Text>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+              <Switch size="small" checked={draft.caveman_cache_aware} onChange={(v) => set('caveman_cache_aware', v)} />
+              缓存感知（对支持 prompt cache 的上游自动弱化压缩）
+            </label>
+            <Alert
+              type="info"
+              showIcon
+              style={{ fontSize: 12 }}
+              message="压缩旧消息会改写「system + 早期消息」这段可缓存前缀，命中价随之失效。对 DeepSeek 这类命中价约原价 1/10 的上游，缓存比压缩更值钱——开启后引擎会自动放大保留窗口、降低压缩强度。"
+            />
           </Space>
         </Card>
       </Col>
@@ -266,6 +282,10 @@ export default function TokenOpt() {
             <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>
               只影响模型「说」多少，不碰你的提问内容；代码、命令等载荷永远原样保留。
             </Typography.Text>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+              <Switch size="small" checked={draft.voice_ignore_cache} onChange={(v) => set('voice_ignore_cache', v)} />
+              缓存优先时仍然注入（会改写 system 前缀，代价是缓存命中下降）
+            </label>
           </Space>
         </Card>
       </Col>

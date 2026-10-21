@@ -131,6 +131,11 @@ class Settings(BaseModel):
     caveman_keep_recent: int = 4  # 最近 N 条消息原样保留，更早的做压缩
     caveman_min_chars: int = 400  # 单块文本超过该字符数才截断
     caveman_compress_system: bool = False  # 是否压缩 system（会降低 prompt cache 命中）
+    # 缓存感知：对支持 prompt cache 的上游自动弱化压缩（放大保留窗口、提高阈值），
+    # 避免改写可缓存前缀导致命中价失效
+    caveman_cache_aware: bool = True
+    # 缓存优先时仍注入 Say less（默认否：改写 system 会破坏缓存前缀）
+    voice_ignore_cache: bool = False
     # Say less（voice）：注入「电报体回复」规则到 system，减少输出 token
     voice_enabled: bool = False
 

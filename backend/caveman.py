@@ -127,48 +127,80 @@ def _shrink_text(text: str, min_chars: int) -> tuple[str, int]:
     return text[:head] + _MARK.format(n=omit) + text[-tail:], omit
 
 
-def _shrink_block_list(blocks: list, min_chars: int) -> int:
+def _shrink_text_light(text: str, min_chars: int) -> tuple[str, int]:
+    """轻量压缩（缓存优先模式）：只折叠空白 + 大幅保留原文，不动结构。
+
+    目的：把改动量压到最小——压缩旧消息本就会改写可缓存前缀，
+    改动越少，前缀重建后越快恢复稳定。
+    与 _shrink_text 的差别：不做 JSON / 日志结构化裁剪，且保留的头尾比例大得多。
+    """
+    t = _squeeze(text)
+    if len(t) < min_chars:
+        return t, len(text) - len(t)
+    # 保留 85%：只截掉中间一小段
+    keep_ratio = 0.85
+    budget = int(len(t) * keep_ratio)
+    head = int(budget * 0.75)
+    tail = budget - head
+    omit = len(t) - head - tail
+    if omit <= 0:
+        return t, len(text) - len(t)
+    return t[:head] + _MARK.format(n=omit) + t[-tail:], omit
+
+
+def _shrink_block_list(blocks: list, min_chars: int, light: bool = False) -> int:
     """压缩 Anthropic blocks / OpenAI 多模态 parts 里的文本型内容。"""
+    fn = _shrink_text_light if light else _shrink_text
     saved = 0
     for b in blocks:
         if not isinstance(b, dict):
             continue
         if b.get("type") == "text" and isinstance(b.get("text"), str):
-            new, n = _shrink_text(b["text"], min_chars)
+            new, n = fn(b["text"], min_chars)
             b["text"], saved = new, saved + n
         elif b.get("type") == "tool_result":
             c = b.get("content")
             if isinstance(c, str):
-                new, n = _shrink_text(c, min_chars)
+                new, n = fn(c, min_chars)
                 b["content"], saved = new, saved + n
             elif isinstance(c, list):
-                saved += _shrink_block_list(c, min_chars)
+                saved += _shrink_block_list(c, min_chars, light)
     return saved
 
 
-def _shrink_message(m: dict, min_chars: int) -> int:
+def _shrink_message(m: dict, min_chars: int, light: bool = False) -> int:
     """压缩单条消息：纯文本 content 直接处理，块列表交给 _shrink_block_list。
 
     同时覆盖 OpenAI 的 tool 角色消息（content 为字符串的工具结果）。
     """
     c = m.get("content")
     if isinstance(c, str):
-        new, n = _shrink_text(c, min_chars)
+        new, n = (_shrink_text_light if light else _shrink_text)(c, min_chars)
         m["content"] = new
         return n
     if isinstance(c, list):
-        return _shrink_block_list(c, min_chars)
+        return _shrink_block_list(c, min_chars, light)
     return 0
 
 
-def compress_body(body: dict) -> tuple[dict, int]:
-    """按设置压缩请求体（原地修改），返回 (body, 省略的字符数)。"""
+def compress_body(body: dict, cache_aware: bool = False) -> tuple[dict, int]:
+    """按设置压缩请求体（原地修改），返回 (body, 省略的字符数)。
+
+    `cache_aware=True` 时进入「缓存优先」模式：保留窗口放大、阈值提高，
+    尽量少改写前缀——因为压缩旧消息恰好会改写可缓存的前缀（system + 早期消息），
+    对命中价差大的上游（DeepSeek 命中价约原价 1/10）来说，缓存比压缩更值钱。
+    """
     st = store.config.settings
     if not st.caveman_enabled:
         return body, 0
     min_chars = max(64, st.caveman_min_chars)
+    keep = max(1, st.caveman_keep_recent)
+    light = cache_aware
+    if cache_aware:
+        min_chars = max(min_chars, st.caveman_min_chars * 2)
+        keep = max(keep, st.caveman_keep_recent * 2)
     saved = 0
-    if st.caveman_compress_system:
+    if st.caveman_compress_system and not cache_aware:
         sys = body.get("system")
         if isinstance(sys, str):
             new, n = _shrink_text(sys, min_chars)
@@ -176,20 +208,54 @@ def compress_body(body: dict) -> tuple[dict, int]:
         elif isinstance(sys, list):
             saved += _shrink_block_list(sys, min_chars)
     msgs = body.get("messages")
-    keep = max(1, st.caveman_keep_recent)
     if isinstance(msgs, list) and len(msgs) > keep:
         for m in msgs[:-keep]:
             if isinstance(m, dict):
-                saved += _shrink_message(m, min_chars)
+                saved += _shrink_message(m, min_chars, light)
     return body, saved
+
+
+# ---------------- 缓存感知 ----------------
+
+# 支持 prompt cache（自动前缀缓存）的上游域名片段。
+# 这些上游命中缓存的 token 按折扣价计费（DeepSeek 约为原价 1/10，
+# Anthropic 命中价为输入价的 1.25 倍），缓存失效的损失大于压缩收益。
+CACHE_CAPABLE_HOSTS = (
+    "anthropic.com", "openai.com", "deepseek.com", "moonshot.cn", "bigmodel.cn",
+    "siliconflow.cn", "volces.com", "dashscope.aliyuncs.com", "sensenova.cn",
+    "agnes-ai.cn", "groq.com", "openrouter.ai", "together.xyz", "mistral.ai",
+    "x.ai", "fireworks.ai", "cerebras.ai", "baidu.com", "stepfun.com",
+)
+
+
+def upstream_supports_cache(upstream: Any) -> bool:
+    """该上游是否支持 prompt cache（按 Base URL 域名判断）。"""
+    try:
+        base = (getattr(upstream, "base_url", "") or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(h in base for h in CACHE_CAPABLE_HOSTS)
+
+
+def cache_aware_mode(upstream: Any) -> bool:
+    """是否进入「缓存优先」模式：上游支持缓存且用户开启了缓存感知。"""
+    if not store.config.settings.caveman_cache_aware:
+        return False
+    return upstream_supports_cache(upstream)
 
 
 # ---------------- Say less：voice 规则注入 ----------------
 
 
-def inject_voice(body: dict) -> bool:
-    """按设置把「电报体回复」规则附加到请求的 system（已注入过则跳过）。"""
+def inject_voice(body: dict, cache_aware: bool = False) -> bool:
+    """按设置把「电报体回复」规则附加到请求的 system（已注入过则跳过）。
+
+    `cache_aware=True` 时默认跳过：改写 system 会改写可缓存前缀。
+    只有用户显式开启「缓存优先也注入 Say less」才注入。
+    """
     if not store.config.settings.voice_enabled:
+        return False
+    if cache_aware and not store.config.settings.voice_ignore_cache:
         return False
     if isinstance(body.get("system"), str):
         if _VOICE_MARKER in body["system"]:
