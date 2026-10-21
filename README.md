@@ -22,28 +22,32 @@
 - 🔀 **协议互转** — Anthropic ⇄ OpenAI 双向转换，流式 / 工具调用 / 图片全支持
 - 🔁 **多上游调度** — 优先级 + 权重，失败自动切换，健康检查 + 故障冷却
 - 🏷️ **模型映射** — 别名 → 上游实际模型，可绑定指定节点
-- 📋 **上游模板** — 每个节点可导出分享模板（含 Base URL / 模型 / 备注，不含 Key），导入即预填新建表单
+- 🔌 **内置 35 家提供商** — 选提供商即自动填 Base URL / 协议 / Key 申请页，也可全自定义
+- 📋 **上游模板** — 每个节点可导出分享模板（含 Base URL / 模型 / 备注 / Key 申请网址，不含 Key），导入即预填新建表单
 - 🔑 **密钥分发** — 多客户端独立 Key，单独限速 / 限模型 / 随时停用
 - 📊 **用量统计** — Token / 延迟 / 成功率，5h · 7d · 30d 滚动窗口
 - 🗜️ **Token 优化** — Caveman 引擎转发前压缩输入（Read less）+ Say less 输出约束 + 缓存感知（保护 prompt cache）+ 代码片段保护，日志逐条展示节省
 - 🔍 **请求详情日志** — 每次请求的完整请求体 / 响应摘要可随时回看（默认可关）
 - 📈 **Plan 实时查询** — OpenCode Go / 火山方舟官方配额实时展示，登录 Cookie 由浏览器扩展一键写入
-- 🖥️ **Web 控制台** — 全图形化配置，改端口即改即生效
+- 🖥️ **双形态控制台** — 客户端版弹独立桌面窗口，网页版开浏览器；同一套前后端
 
 ## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/<you>/switchboard.git
+git clone https://github.com/Pipluuup/switchboard.git
 cd switchboard
 pip install -r requirements.txt
 python run.py
 ```
 
+或直接下载 [Releases](https://github.com/Pipluuup/switchboard/releases) 里的 exe 双击即用
+（客户端版弹桌面窗口，网页版开浏览器）。
+
 打开 `http://127.0.0.1:8000`，三步完成配置：
 
 | Step | 操作 |
 |:---:|---|
-| 1️⃣ | **上游管理** → 新增上游（Base URL + Key，协议按上游端点选） |
+| 1️⃣ | **上游管理** → 新增上游（选提供商自动填 Base URL，填 Key） |
 | 2️⃣ | **客户端 Key** → 创建 Key（可设速率 / 额度 / 模型白名单） |
 | 3️⃣ | **接入指南** → 复制环境变量或提示词给客户端 |
 
@@ -97,6 +101,42 @@ export ANTHROPIC_API_KEY="你的客户端Key"
 > 它同样强调：**光看有没有 `cache_control` 标记是不够的**——OpenAI / Codex 这类
 > 自动前缀缓存的 provider 不带任何标记，只靠标记判断会导致前缀被改写、缓存必然失效。
 
+### 📐 设计取舍
+
+引擎的设计目标不是「压得越多越好」，而是**在不伤到正确性的前提下压**。几个关键取舍：
+
+| 决策 | 原因 |
+|---|---|
+| **从不改写用户当前提问** | 改写 prompt 会降低回答质量（这是 caveman 项目自己的研究结论） |
+| **压缩是纯函数**（同一原文结果逐字节一致） | 不一致就无法命中 prompt cache |
+| **窗口外一刀切，不做分级老化** | 分级老化每降一级就改一次前缀，缓存重建次数更多 |
+| **不做语义压缩**（不删「基本上」「I think」这类填充词） | 改写自然语言有质量风险；本项目主场景是编码负载，结构化内容才是大头 |
+| **不内置 SLM**（LLMLingua 之类） | 需要额外下载 ONNX 模型，缺依赖时静默失效；收益不抵复杂度 |
+| **RTK 用官方 CLI 而非网关内嵌** | 规则由官方维护，更新及时；且客户端侧压缩省的是客户端的上下文 |
+
+实测同一份混合负载（代码块 + 120 行错误日志 + 冗长散文）：
+
+| 模式 | 压缩前 | 压缩后 | 节省 | 代码 / 路径 / URL |
+|---|---|---|---|---|
+| 常规 | 12,578 | 4,240 | 66% | ✅ 全部保留 |
+| 缓存优先 | 12,578 | 10,743 | 15% | ✅ 全部保留 |
+
+前缀稳定性：8 轮对话中，前缀仅在旧消息被挤出窗口时变化 **2 次**，之后完全稳定。
+
+### 🔬 与 OmniRoute 的对比
+
+| 维度 | Switchboard | OmniRoute |
+|---|---|---|
+| 代码块保护 | ✅ tombstone 摘出 + 缝回 | ✅ 墓碑化后原样缝合 |
+| tool 配对保护 | ✅ 含 tool_use/tool_result 的消息跳过 | ✅ 结构完整性守卫 |
+| 缓存感知 | ✅ 按上游域名识别 + 弱化模式 | ✅ 按 provider 判断 |
+| 压缩统计 | ✅ 原始/压缩后/节省率/模式/能力 | ✅ 每次请求完整 stats |
+| 前缀稳定性 | ✅ 挤出窗口后即稳定 | ⚠️ 分级老化，每降一级变一次 |
+| 确定性 | ✅ 纯函数 | ⚠️ 含摘要器 / SLM |
+| 语义压缩 | ❌ 只做结构感知 | ✅ 30+ 正则规则 + 可选 SLM |
+| 引擎数量 | 1 + RTK（客户端侧） | 10+ |
+| 依赖 | 纯 Python，零额外依赖 | 需 ONNX 模型 + pythonnet |
+
 ## 📈 Plan 实时查询
 
 「用量」页可实时展示 **OpenCode Go** 与 **火山方舟** Coding Plan 的官方配额。登录 Cookie 无需手动复制——
@@ -105,17 +145,42 @@ export ANTHROPIC_API_KEY="你的客户端Key"
 2. `chrome://extensions` 开发者模式加载解压目录
 3. 登录对应控制台后，点扩展按钮一键写回网关
 
+## 🔌 上游接入
+
+「上游管理」→ 新增上游时，先选**提供商**——内置 35 家，选中即自动填好 Base URL、
+协议与 Key 申请页；选「自定义」则全部手填，并可填「Key 获取网址」（导出模板时会带上，
+方便对方自行申请）。
+
+内置：CommandCode（GOAT）、OpenCode Go / Zen、Agnes AI、SenseNova、DeepSeek、Moonshot、
+SiliconFlow、火山方舟、阿里百炼、智谱 GLM、百川智能、MiniMax、百度千帆、阶跃星辰、
+无问芯穹、OpenRouter、AiHubMix、AnyRouter、Oatify、HuggingFace、Anthropic 官方、
+OpenAI 官方、Google Gemini、Mistral、xAI、Groq、Together AI、Cerebras、Fireworks AI、
+NVIDIA NIM、LM Studio / Ollama（本地）+ 自定义。
+
+每个节点还可**导出分享模板**（JSON，含 Base URL / 模型 / 备注 / Key 申请网址，**不含 Key**），
+对方导入即预填新建表单。
+
 ## 📦 打包分发
 
-```bash
-python scripts/build_exe.py    # PyInstaller 单文件 exe → release/，免 Python 双击即用
-```
+提供两个版本，功能完全一致，区别只在界面形态：
+
+| 版本 | 打包命令 | 产物 | 行为 |
+|---|---|---|---|
+| **客户端版** | `python scripts/build_exe.py --variant gui` | `release/Switchboard.exe`（66 MB） | 双击弹出独立桌面窗口，无需浏览器 |
+| **网页版** | `python scripts/build_exe.py --variant web` | `release/Switchboard-Web.exe`（29 MB） | 双击后自动打开浏览器控制台 |
+
+两个版本的数据目录都是 exe 同级的 `data/`，配置与日志各自独立（同端口不能同时跑，
+可给其中一个 `--port` 换端口）。
+
+桌面窗口基于 [pywebview](https://pywebview.org)（Windows 上走 WebView2）。
+未安装 pywebview 时自动降级为浏览器并提示。
 
 ## 🧪 开发
 
 ```bash
 python tests/test_converter.py     # 协议转换单元测试
 python tests/test_usage.py         # 用量窗口单元测试
+python tests/test_caveman.py       # 压缩引擎：片段保护 / tool 配对 / 缓存感知 / 统计
 ```
 
 需求与设计文档见 [docs/](docs/README.md)，改代码前先读对应 PRD。
