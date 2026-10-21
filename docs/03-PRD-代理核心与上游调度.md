@@ -1,20 +1,30 @@
 # 03 · PRD · 代理核心与上游调度
 
-> 关联代码：`backend/converter.py`、`backend/upstream_pool.py`、`backend/proxy_routes.py`
+> 关联代码：`backend/converter.py`、`backend/responses_converter.py`、
+> `backend/upstream_pool.py`、`backend/proxy_routes.py`
 
-## 1. 协议转换（converter.py）
+## 1. 协议转换（converter.py + responses_converter.py）
 
 ### 目标
 
-客户端只说 Anthropic；上游可能说 Anthropic 或 OpenAI。转换层把 2×2 组合里
-不一致的三个方向补齐：
+客户端可能说 Anthropic、OpenAI Chat 或 OpenAI Responses；上游同理。
+转换层把不一致的方向补齐——**请求与响应各一张查表**：
 
-| 客户端 → 上游 | 是否转换 |
+| 入站 → 上游 | 是否转换 |
 |---|---|
 | anthropic → anthropic | 透传（改写 model 名） |
 | anthropic → openai | 转换（含流式） |
 | openai → anthropic | 转换（含流式） |
 | openai → openai | 透传（改写 model 名） |
+| anthropic → responses | 转换（含流式） |
+| responses → anthropic | 转换（含流式） |
+| responses → openai | 转换（含流式） |
+| openai → responses | 转换（含流式） |
+| responses → responses | 透传（改写 model 名） |
+
+> `responses` 与 `chat` 共用一套语义（Responses 只是形状不同），
+> 所以同一对方向复用同一个转换函数。查表在 `proxy_routes.py` 的
+> `_REQUEST_CONVERTERS` / `_RESPONSE_CONVERTERS`。
 
 ### 行为规格
 
@@ -26,10 +36,18 @@
 - 改写规则：发往上游的 `model` 恒为映射后的 `target`；日志同时记
   `request_model`（客户端要的）与 `actual_model`（实际消耗额度的名字）。
 
+### 协议取值的约束
+
+`config.py` 的 `Protocol` 字面量里**每加一个取值，`upstream_pool.endpoint()`
+就必须有对应分支**——否则它会静默走 `else` 分支打到 `/chat/completions`，
+用户以为在用新协议、实际打错端点。`tests/test_frontend_contract.py` 盯着这条。
+
 ### 验证基准
 
-`tests/test_converter.py` 38 条断言是转换行为的**唯一权威描述**——改转换器先读它，
-改完必须全绿。
+- `tests/test_converter.py` 38 条：Anthropic ⇄ OpenAI 转换与流式事件映射
+- `tests/test_responses_converter.py` 29 条：Responses 协议转换（请求/响应/流式）
+
+两个套件合起来是转换行为的**唯一权威描述**——改转换器先读它们，改完必须全绿。
 
 ## 2. 上游调度（upstream_pool.py）
 
@@ -56,19 +74,26 @@
 
 ## 3. 代理入口（proxy_routes.py)
 
-- `POST /v1/messages`（Anthropic 风格）、`POST /v1/chat/completions`（OpenAI 风格）；
-- 鉴权 → 限流 → 映射 → 选路 → 转换 → 转发 → 记日志，链路见 [02](02-架构与技术决策.md)；
+- `POST /v1/messages`（Anthropic 风格）、`POST /v1/chat/completions`（OpenAI Chat 风格）、
+  `POST /v1/responses`（OpenAI Responses 风格），另有 `POST /v1/messages/count_tokens`
+  与 `GET /v1/models`；
+- 入站协议**不靠 URL path 判断**——`/v1/messages/count_tokens` 并不以 messages 结尾。
+  判据是：带 `anthropic-version` 头 → Anthropic；路径以 `/responses` 结尾 → Responses；
+  其余 → OpenAI Chat；
+- 鉴权 → 限流 → 映射 → 选路 → 压缩 → 转换 → 转发 → 记日志，
+  链路见 [02](02-架构与技术决策.md)；
 - 客户端断开/超时需保证上游连接被关闭，不悬挂。
 
-## 4. 已知限制（对应总览 #1/#2/#4）
+## 4. 已知限制（对应总览 #2/#4/#5）
 
 1. **请求头不透传**：`endpoint()` 自建请求头，客户端 UA、自定义头都到不了上游。
    改造方向：`Upstream` 增加 `custom_headers` 字段，`endpoint()` 与 `pool.call()`
    接受并合并额外头；前端上游表单加对应输入。
+   （OpenCode Go 是特例：`_is_opencode()` 会自动补专用 UA 与 `x-opencode-session`。）
 2. **白名单落空回退**：`candidates()` 里"过滤后为空就退回全量"的逻辑会让
    `grok-4.7` 这类无主模型砸到 CommandCode 头上。应改为返回空候选 → 422
    "网关内无此模型"。
-3. `/v1/responses` 无入口无转换（见 [05](05-PRD-OpenCode-Go接入.md)）。
+3. **日志保留期截断 30d 窗口**：见 [01](01-产品总览与路线.md) 已知问题 #5。
 
 ## 5. E2E 测试规约
 
