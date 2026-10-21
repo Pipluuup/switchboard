@@ -11,6 +11,7 @@ import {
   ReloadOutlined,
   BookOutlined,
   RocketOutlined,
+  LinkOutlined,
 } from '@ant-design/icons'
 import { GET } from './api/client'
 import Dashboard from './views/Dashboard'
@@ -21,12 +22,13 @@ import Keys from './views/Keys'
 import Logs from './views/Logs'
 import Settings from './views/Settings'
 import TokenOpt from './views/TokenOpt'
+import Clients from './views/Clients'
 import QuickstartModal from './components/QuickstartModal'
 import './global.css'
 
 const { Sider, Header, Content } = Layout
 
-type ViewKey = 'dashboard' | 'usage' | 'logs' | 'upstreams' | 'mappings' | 'keys' | 'optimize' | 'settings'
+type ViewKey = 'dashboard' | 'usage' | 'logs' | 'upstreams' | 'mappings' | 'keys' | 'optimize' | 'clients' | 'settings'
 
 const VIEW_META: Record<ViewKey, { title: string; sub: string }> = {
   dashboard: { title: '概览', sub: '服务运行状态与用量统计' },
@@ -36,6 +38,7 @@ const VIEW_META: Record<ViewKey, { title: string; sub: string }> = {
   mappings: { title: '模型映射', sub: '把客户端请求的模型别名映射到上游实际模型' },
   keys: { title: '客户端 Key', sub: '为本地工具分发独立密钥并限速' },
   optimize: { title: 'Token 优化', sub: 'Caveman 引擎：转发前压缩请求，节省上游 token' },
+  clients: { title: '客户端接入', sub: '一键把 Claude Code / Codex / Gemini CLI 指向本服务' },
   settings: { title: '设置', sub: '服务参数、容错策略与配置备份' },
 }
 
@@ -63,6 +66,7 @@ const MENU_ITEMS = [
     label: '系统',
     children: [
       { key: 'optimize', icon: <RocketOutlined />, label: 'Token 优化' },
+      { key: 'clients', icon: <LinkOutlined />, label: '客户端接入' },
       { key: 'settings', icon: <SettingOutlined />, label: '设置' },
     ],
   },
@@ -178,6 +182,7 @@ export default function App() {
             {view === 'mappings' && <Mappings />}
             {view === 'keys' && <Keys />}
             {view === 'optimize' && <TokenOpt />}
+            {view === 'clients' && <Clients />}
             {view === 'settings' && <Settings />}
           </div>
         </Content>

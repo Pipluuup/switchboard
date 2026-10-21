@@ -19,7 +19,7 @@ from .paths import data_dir
 DATA_DIR = data_dir()
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
-Protocol = Literal["anthropic", "openai"]
+Protocol = Literal["anthropic", "openai", "responses", "gemini"]
 
 
 def new_id(prefix: str = "") -> str:
@@ -140,11 +140,22 @@ class Settings(BaseModel):
     voice_enabled: bool = False
 
 
+class ClientProfile(BaseModel):
+    """客户端接入档位：一键把本地客户端指向本服务。"""
+    id: str = Field(default_factory=lambda: new_id("cp_"))
+    name: str = "新档位"
+    client: str = "claude"        # claude / codex / gemini
+    client_key_id: str = ""       # 用哪个客户端 Key
+    model: str = ""               # 映射到网关的哪个模型（写进客户端的模型配置）
+    enabled: bool = True
+
+
 class Config(BaseModel):
     version: int = 1
     upstreams: list[Upstream] = Field(default_factory=list)
     mappings: list[ModelMapping] = Field(default_factory=list)
     client_keys: list[ClientKey] = Field(default_factory=list)
+    client_profiles: list[ClientProfile] = Field(default_factory=list)
     settings: Settings = Field(default_factory=Settings)
 
 
@@ -317,6 +328,47 @@ class ConfigStore:
     def list_keys(self) -> list[ClientKey]:
         with self._lock:
             return list(self.config.client_keys)
+
+    # ---------- 客户端接入档位 ----------
+    def list_profiles(self) -> list[ClientProfile]:
+        with self._lock:
+            return list(self.config.client_profiles)
+
+    def get_profile(self, pid: str) -> ClientProfile | None:
+        with self._lock:
+            for p in self.config.client_profiles:
+                if p.id == pid:
+                    return p
+        return None
+
+    def add_profile(self, data: dict[str, Any]) -> ClientProfile:
+        with self._lock:
+            data = dict(data)
+            data.pop("id", None)
+            p = ClientProfile.model_validate(data)
+            self.config.client_profiles.append(p)
+            self.save()
+            return p
+
+    def update_profile(self, pid: str, data: dict[str, Any]) -> ClientProfile | None:
+        with self._lock:
+            for p in self.config.client_profiles:
+                if p.id == pid:
+                    for k, v in (data or {}).items():
+                        if k in ClientProfile.model_fields and k != "id":
+                            setattr(p, k, v)
+                    self.save()
+                    return p
+        return None
+
+    def delete_profile(self, pid: str) -> bool:
+        with self._lock:
+            before = len(self.config.client_profiles)
+            self.config.client_profiles = [p for p in self.config.client_profiles if p.id != pid]
+            if len(self.config.client_profiles) == before:
+                return False
+            self.save()
+            return True
 
     def get_key(self, kid: str) -> ClientKey | None:
         with self._lock:

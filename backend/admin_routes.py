@@ -294,6 +294,74 @@ async def get_log_detail(log_id: int, _=Depends(require_admin)):
     return row
 
 
+# ------------------------------------------------------------------ 客户端接入
+
+
+@router.get("/client-setups")
+async def list_client_setups(_=Depends(require_admin)):
+    """各客户端的当前接入状态 + 已配置的档位。"""
+    from . import client_setup
+
+    profiles = [p.model_dump() for p in store.list_profiles()]
+    for p in profiles:
+        ck = store.get_key(p.get("client_key_id") or "")
+        p["client_key_name"] = ck.name if ck else ""
+        p["client_key_masked"] = ck.masked() if ck else ""
+    return {
+        "clients": client_setup.all_status(),
+        "profiles": profiles,
+        "base_url": client_setup.gateway_base(),
+    }
+
+
+@router.post("/client-setups")
+async def create_client_setup(data: dict[str, Any], _=Depends(require_admin)):
+    return store.add_profile(data).model_dump()
+
+
+@router.put("/client-setups/{pid}")
+async def update_client_setup(pid: str, data: dict[str, Any], _=Depends(require_admin)):
+    p = store.update_profile(pid, data)
+    if not p:
+        raise HTTPException(404, "档位不存在")
+    return p.model_dump()
+
+
+@router.delete("/client-setups/{pid}")
+async def delete_client_setup(pid: str, _=Depends(require_admin)):
+    if not store.delete_profile(pid):
+        raise HTTPException(404, "档位不存在")
+    return {"ok": True}
+
+
+@router.post("/client-setups/apply")
+async def apply_client_setup(data: dict[str, Any], _=Depends(require_admin)):
+    """把客户端配置改写为指向本服务（切换前自动备份）。"""
+    from . import client_setup
+
+    client = (data.get("client") or "").strip()
+    pid = (data.get("profile_id") or "").strip()
+    profile = store.get_profile(pid)
+    if not profile:
+        raise HTTPException(404, "档位不存在")
+    try:
+        return client_setup.apply_setup(client, profile.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/client-setups/restore")
+async def restore_client_setup(data: dict[str, Any], _=Depends(require_admin)):
+    """从最近一次备份还原客户端配置。"""
+    from . import client_setup
+
+    client = (data.get("client") or "").strip()
+    try:
+        return client_setup.restore_setup(client)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.get("/rtk/status")
 async def rtk_status(_=Depends(require_admin)):
     """检测本机是否安装 RTK（Rust Token Killer，客户端命令输出压缩工具）。

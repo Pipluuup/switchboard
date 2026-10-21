@@ -200,6 +200,32 @@ export interface Quickstart {
   snippets: { env: string; powershell: string; ccswitch: string }
 }
 
+/** 客户端接入状态 */
+export interface ClientSetup {
+  client: string
+  label: string
+  config_path: string
+  exists: boolean
+  hint: string
+  base_url: string
+  model: string
+  attached: boolean
+  has_backup: boolean
+  error?: string
+}
+
+/** 客户端接入档位 */
+export interface ClientProfile {
+  id: string
+  name: string
+  client: string
+  client_key_id: string
+  client_key_name?: string
+  client_key_masked?: string
+  model: string
+  enabled: boolean
+}
+
 export interface ConfigExport {
   upstreams: unknown[]
   mappings: unknown[]

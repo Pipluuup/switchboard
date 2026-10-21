@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import caveman
 from . import converter as cv
+from . import responses_converter as rc
 from .config import store
 from .database import db
 from .limiter import limiter
@@ -25,6 +26,34 @@ from .upstream_pool import pool
 router = APIRouter()
 
 ANTHROPIC_VERSION = "2023-06-01"
+
+# 协议转换查表：(入站协议, 上游协议) -> 请求转换函数
+# 「responses」与「chat」共用一套语义（Responses 只是形状不同），
+# 所以同一对方向可以复用同一个函数。
+_REQUEST_CONVERTERS: dict[tuple[str, str], Any] = {
+    ("anthropic", "openai"): cv.anthropic_request_to_openai,
+    ("openai", "anthropic"): cv.openai_request_to_anthropic,
+    ("anthropic", "responses"): rc.responses_request_to_chat,
+    ("responses", "anthropic"): rc.chat_request_to_responses,
+    # 入站 responses → 上游 chat：把 Responses 的 input 转成 chat 的 messages
+    ("responses", "openai"): rc.responses_request_to_chat,
+    # 入站 chat → 上游 responses：把 chat 的 messages 转成 Responses 的 input
+    ("openai", "responses"): rc.chat_request_to_responses,
+}
+
+# 响应转换查表：(入站协议, 上游协议) -> 响应转换函数
+_RESPONSE_CONVERTERS: dict[tuple[str, str], Any] = {
+    # 上游 openai → 入站 anthropic
+    ("anthropic", "openai"): cv.openai_response_to_anthropic,
+    # 上游 anthropic → 入站 openai
+    ("openai", "anthropic"): cv.anthropic_response_to_openai,
+    # 上游 responses → 入站 anthropic / openai
+    ("anthropic", "responses"): rc.responses_response_to_chat,
+    ("openai", "responses"): rc.responses_response_to_chat,
+    # 上游 chat → 入站 responses
+    ("responses", "openai"): rc.chat_response_to_responses,
+    ("responses", "anthropic"): rc.chat_response_to_responses,
+}
 
 
 # ------------------------------------------------------------------ 工具
@@ -53,6 +82,17 @@ def body_text(body: dict) -> str:
         parts.append(sys)
     elif isinstance(sys, list):
         parts.extend(cv._text_of(b) if isinstance(b, dict) else str(b) for b in sys)
+    # Responses：input 数组
+    for it in body.get("input", []) or []:
+        if isinstance(it, str):
+            parts.append(it)
+        elif isinstance(it, dict):
+            if it.get("type") == "function_call":
+                parts.append(str(it.get("arguments") or ""))
+            elif it.get("type") == "function_call_output":
+                parts.append(str(it.get("output") or ""))
+            else:
+                parts.append(cv._text_of(it.get("content")))
     for m in body.get("messages", []) or []:
         c = m.get("content")
         if isinstance(c, str):
@@ -80,6 +120,14 @@ def extract_usage(text: str, protocol: str) -> tuple[int, int]:
                 tin = int(ins[0])          # message_start 里的才是 input
             if outs:
                 tout = int(outs[-1])       # 最后一次 message_delta 的累计值
+        elif protocol == "responses":
+            # Responses 的 usage 字段名不同：input_tokens / output_tokens
+            ins = re.findall(r'"input_tokens"\s*:\s*(\d+)', text)
+            outs = re.findall(r'"output_tokens"\s*:\s*(\d+)', text)
+            if ins:
+                tin = int(ins[-1])
+            if outs:
+                tout = int(outs[-1])
         else:
             ins = re.findall(r'"prompt_tokens"\s*:\s*(\d+)', text)
             outs = re.findall(r'"completion_tokens"\s*:\s*(\d+)', text)
@@ -109,6 +157,16 @@ def resp_text(obj: Any) -> str:
             elif b.get("type") == "tool_use":
                 parts.append(json.dumps(b.get("input") or {}, ensure_ascii=False))
         return "\n".join(parts)
+    if obj.get("output") is not None:        # Responses
+        parts = []
+        for item in obj.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message":
+                parts.append(cv._text_of(item.get("content")))
+            elif item.get("type") == "function_call":
+                parts.append(str(item.get("arguments") or ""))
+        return "".join(parts)
     choices = obj.get("choices") or [{}]    # OpenAI
     msg = (choices[0] if choices else {}).get("message") or {}
     if msg.get("content"):
@@ -154,7 +212,7 @@ def _stream_text(raw: str, protocol: str) -> str:
             return json.loads(f'"{joined}"')  # 还原 \n 等转义
         except Exception:  # noqa: BLE001
             return joined
-    # OpenAI：逐行解析 data: {...} 里的 delta.content
+    # OpenAI / Responses：逐行解析 data: {...}
     out: list[str] = []
     for line in raw.splitlines():
         line = line.strip()
@@ -165,6 +223,11 @@ def _stream_text(raw: str, protocol: str) -> str:
             continue
         try:
             d = json.loads(data)
+            # Responses 事件流
+            if d.get("type") == "response.output_text.delta":
+                if isinstance(d.get("delta"), str):
+                    out.append(d["delta"])
+                continue
             delta = ((d.get("choices") or [{}])[0].get("delta") or {})
             if isinstance(delta.get("content"), str):
                 out.append(delta["content"])
@@ -221,6 +284,9 @@ def client_protocol(request: Request) -> str:
     """
     if request.headers.get("anthropic-version"):
         return "anthropic"
+    # Responses 客户端不发 anthropic-version，只能看路径
+    if request.url.path.rstrip("/").endswith("/responses"):
+        return "responses"
     return "openai"
 
 
@@ -353,10 +419,13 @@ async def handle_request(request: Request, in_protocol: str):
         if in_protocol == up.protocol:
             payload = dict(body)
             payload["model"] = target_model
-        elif in_protocol == "anthropic" and up.protocol == "openai":
-            payload = cv.anthropic_request_to_openai(body, target_model)
         else:
-            payload = cv.openai_request_to_anthropic(body, target_model)
+            conv = _REQUEST_CONVERTERS.get((in_protocol, up.protocol))
+            if conv is None:
+                last_err = (f"{up.name}: 暂不支持 {in_protocol} → {up.protocol} 协议转换")
+                pool.report_failure(up, last_err)
+                continue
+            payload = conv(body, target_model)
 
         try:
             resp = await pool.call(up, payload, stream, session_id=session_id)
@@ -450,12 +519,26 @@ async def handle_request(request: Request, in_protocol: str):
                     raw_buf.append(line)
                     yield line
 
-            if in_protocol == "anthropic":
-                conv = cv.openai_stream_to_anthropic_sse(
-                    tee_lines(_byte_iter(resp)), target_model, in_tokens_est)
+            # 流式转换：(上游协议, 入站协议) 决定用哪个转换器
+            src_lines = tee_lines(_byte_iter(resp))
+            if up.protocol == "openai" and in_protocol == "anthropic":
+                conv = cv.openai_stream_to_anthropic_sse(src_lines, target_model, in_tokens_est)
+            elif up.protocol == "anthropic" and in_protocol == "openai":
+                conv = cv.anthropic_stream_to_openai_sse(src_lines, target_model)
+            elif up.protocol == "responses" and in_protocol == "openai":
+                conv = rc.responses_stream_to_chat_sse(src_lines, target_model)
+            elif up.protocol == "responses" and in_protocol == "anthropic":
+                conv = rc.responses_stream_to_anthropic_sse(src_lines, target_model, in_tokens_est)
+            elif up.protocol == "openai" and in_protocol == "responses":
+                conv = rc.chat_stream_to_responses_sse(src_lines, target_model)
+            elif up.protocol == "anthropic" and in_protocol == "responses":
+                conv = rc.anthropic_stream_to_responses_sse(src_lines, target_model)
             else:
-                conv = cv.anthropic_stream_to_openai_sse(
-                    tee_lines(_byte_iter(resp)), target_model)
+                make_log("".join(raw_buf))
+                return err_response(
+                    in_protocol,
+                    f"暂不支持 {up.protocol} → {in_protocol} 流式转换",
+                    502, "api_error")
 
             async def gen_conv():
                 try:
@@ -481,10 +564,15 @@ async def handle_request(request: Request, in_protocol: str):
 
         if in_protocol == up.protocol:
             out = data
-        elif in_protocol == "anthropic":
-            out = cv.openai_response_to_anthropic(data, target_model, in_tokens_est)
         else:
-            out = cv.anthropic_response_to_openai(data, target_model)
+            conv = _RESPONSE_CONVERTERS.get((in_protocol, up.protocol))
+            if conv is None:
+                make_log(text)
+                return err_response(
+                    in_protocol,
+                    f"暂不支持 {up.protocol} → {in_protocol} 响应转换",
+                    502, "api_error")
+            out = conv(data, target_model, in_tokens_est)
 
         make_log(text, out)
         return JSONResponse(content=out)
@@ -533,6 +621,12 @@ async def anthropic_count_tokens(request: Request):
 @router.post("/v1/chat/completions")
 async def openai_chat(request: Request):
     return await handle_request(request, "openai")
+
+
+@router.post("/v1/responses")
+async def openai_responses(request: Request):
+    """OpenAI Responses 协议入口（Codex / OpenAI 新 SDK / OpenCode Go 的 responses 端点）。"""
+    return await handle_request(request, "responses")
 
 
 @router.get("/v1/models")

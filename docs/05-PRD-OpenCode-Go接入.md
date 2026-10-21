@@ -12,14 +12,16 @@ OpenCode Go（`https://opencode.ai/zen/go/v1`）把模型分布在**三个不同
 |---|---|---|---|
 | `/v1/chat/completions` | OpenAI | GLM / Kimi / LongCat / DeepSeek / MiMo / Hy / Space Bunny（19 个） | ✅ |
 | `/v1/messages` | Anthropic | MiniMax M3 / M2.7、Qwen3.8 Max/Flash、Qwen3.7 Plus（5 个） | ✅ |
-| `/v1/responses` | OpenAI Responses | Grok 4.7/4.6、GPT 6 Luna、GPT 5.6 Luna、Muse Spark 1.3/1.2 | ❌（总览 #3） |
+| `/v1/responses` | OpenAI Responses | Grok 4.7/4.6、GPT 6 Luna、GPT 5.6 Luna、Muse Spark 1.3/1.2 | ✅（2026-10-21 已实现转换器） |
 
 硬约束：
 
 - Go 要求**专用 User-Agent** 和 **`x-opencode-session` 头**（影响路由与提示词缓存），
   通用 SDK UA 不行 → ✅ 已解决（2026-10-13）：代理检测 OpenCode 上游自动带
   `Switchboard/1.0` UA + 会话头（见下文「会话头实现」）；
-- 一个上游条目只能一个协议 → **同 base_url 建两条上游**，靠各自 `models` 白名单区分。
+- 一个上游条目只能一个协议 → **同 base_url 建三条上游**，靠各自 `models` 白名单区分
+  （`/v1/chat/completions` openai 协议、`/v1/messages` anthropic 协议、
+  `/v1/responses` responses 协议）。
 
 ## 2. 上游条目设计
 
@@ -42,6 +44,18 @@ OpenCode Go（`https://opencode.ai/zen/go/v1`）把模型分布在**三个不同
 
 `priority=200` 低于 CommandCode 的 100：同模型多上游可用时优先CommandCode，
 Go 作为扩容池。
+
+## 2.1 Responses 上游（2026-10-21 新增）
+
+代理已实现 OpenAI Responses 协议（入站 `/v1/responses` + 上游 `responses` 协议），
+可承载 Go 的 responses 端点模型：
+
+| 上游 | protocol | base_url | models 白名单 |
+|---|---|---|---|
+| OpenCode Go (Responses) | `responses` | `https://opencode.ai/inference/go/v1` | `grok-4.7`、`grok-4.6`、`gpt-6-luna`、`gpt-5.6-luna`、`muse-spark-1.3`、`muse-spark-1.2-contributor` |
+
+客户端用 Responses 协议时（如 Codex CLI），请求会经 `responses_converter.py`
+转成上游所需格式；工具调用靠 `call_id` 关联，转往返不丢。
 
 ## 3. 模型别名（映射表）
 

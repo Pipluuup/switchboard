@@ -137,6 +137,8 @@ class UpstreamPool:
         if up.protocol == "anthropic":
             headers["anthropic-version"] = "2023-06-01"
             url = f"{base}/messages"
+        elif up.protocol == "responses":
+            url = f"{base}/responses"
         else:
             url = f"{base}/chat/completions"
         if _is_opencode(base):

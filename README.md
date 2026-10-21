@@ -19,7 +19,7 @@
 
 ## ✨ Features
 
-- 🔀 **协议互转** — Anthropic ⇄ OpenAI 双向转换，流式 / 工具调用 / 图片全支持
+- 🔀 **协议互转** — Anthropic / OpenAI Chat / OpenAI Responses 三种协议互转，流式 / 工具调用 / 图片全支持
 - 🔁 **多上游调度** — 优先级 + 权重，失败自动切换，健康检查 + 故障冷却
 - 🏷️ **模型映射** — 别名 → 上游实际模型，可绑定指定节点
 - 🔌 **内置 35 家提供商** — 选提供商即自动填 Base URL / 协议 / Key 申请页，也可全自定义
@@ -29,6 +29,7 @@
 - 🗜️ **Token 优化** — Caveman 引擎转发前压缩输入（Read less）+ Say less 输出约束 + 缓存感知（保护 prompt cache）+ 代码片段保护，日志逐条展示节省
 - 🔍 **请求详情日志** — 每次请求的完整请求体 / 响应摘要可随时回看（默认可关）
 - 📈 **Plan 实时查询** — OpenCode Go / 火山方舟官方配额实时展示，登录 Cookie 由浏览器扩展一键写入
+- 🔗 **客户端一键接入** — 像 ccswitch 一样改写 Claude Code / Codex / Gemini 配置指向本服务，自动备份可还原
 - 🖥️ **双形态控制台** — 客户端版弹独立桌面窗口，网页版开浏览器；同一套前后端
 
 ## 🚀 Quick Start
@@ -137,6 +138,33 @@ export ANTHROPIC_API_KEY="你的客户端Key"
 | 引擎数量 | 1 + RTK（客户端侧） | 10+ |
 | 依赖 | 纯 Python，零额外依赖 | 需 ONNX 模型 + pythonnet |
 
+## 🔌 客户端一键接入
+
+「客户端接入」页可以像 ccswitch 一样，**一键把本地 Agent 客户端指向本服务**——
+不用手改配置文件。机制是改写客户端的配置（切换前自动备份到
+`data/client_backups/`，随时可一键还原）：
+
+| 客户端 | 配置文件 | 写入内容 |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_DEFAULT_*_MODEL` |
+| Codex CLI | `~/.codex/config.toml` | `model_providers.switchboard`（`wire_api = "responses"`） |
+| Gemini CLI | `~/.gemini/.env` | `GOOGLE_GEMINI_BASE_URL` / `GEMINI_API_KEY` |
+
+用法：先建一个**档位**（选客户端 Key + 模型），再在对应客户端卡片上点「应用」。
+
+> 只改写 `env` / 对应配置段，客户端的 `permissions`、`hooks` 等其余内容原样保留。
+
+## 🔁 协议支持
+
+| 协议 | 入站 | 上游 | 说明 |
+|---|---|---|---|
+| Anthropic Messages | `/v1/messages` | ✅ | Claude Code 原生协议 |
+| OpenAI Chat Completions | `/v1/chat/completions` | ✅ | 绝大多数兼容端点 |
+| OpenAI Responses | `/v1/responses` | ✅ | Codex / OpenAI 新 SDK / OpenCode Go 的 Grok·GPT Luna·Muse 系列 |
+
+任意两种协议之间可互相转换（请求 / 响应 / 流式都支持）；
+上游协议在「上游管理」里按节点选择。
+
 ## 📈 Plan 实时查询
 
 「用量」页可实时展示 **OpenCode Go** 与 **火山方舟** Coding Plan 的官方配额。登录 Cookie 无需手动复制——
@@ -145,7 +173,7 @@ export ANTHROPIC_API_KEY="你的客户端Key"
 2. `chrome://extensions` 开发者模式加载解压目录
 3. 登录对应控制台后，点扩展按钮一键写回网关
 
-## 🔌 上游接入
+## 🧩 上游接入
 
 「上游管理」→ 新增上游时，先选**提供商**——内置 35 家，选中即自动填好 Base URL、
 协议与 Key 申请页；选「自定义」则全部手填，并可填「Key 获取网址」（导出模板时会带上，
@@ -181,6 +209,7 @@ NVIDIA NIM、LM Studio / Ollama（本地）+ 自定义。
 python tests/test_converter.py     # 协议转换单元测试
 python tests/test_usage.py         # 用量窗口单元测试
 python tests/test_caveman.py       # 压缩引擎：片段保护 / tool 配对 / 缓存感知 / 统计
+python tests/test_responses_converter.py  # Responses 协议转换（请求 / 响应 / 流式）
 ```
 
 需求与设计文档见 [docs/](docs/README.md)，改代码前先读对应 PRD。

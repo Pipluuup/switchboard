@@ -158,6 +158,7 @@ function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues
             options={[
               { value: 'anthropic', label: 'Anthropic（/v1/messages）' },
               { value: 'openai', label: 'OpenAI（/v1/chat/completions）' },
+              { value: 'responses', label: 'OpenAI Responses（/v1/responses）' },
             ]}
           />
         </Form.Item>

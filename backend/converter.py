@@ -553,7 +553,7 @@ def _anthropic_stop_to_oai_finish(stop: str | None) -> str:
     }.get(stop or "", "stop")
 
 
-def anthropic_response_to_openai(data: dict, model: str) -> dict:
+def anthropic_response_to_openai(data: dict, model: str, input_tokens: int = 0) -> dict:
     blocks = data.get("content") or []
     text_parts: list[str] = []
     tool_calls: list[dict] = []
