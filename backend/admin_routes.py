@@ -405,7 +405,8 @@ async def caveman_preview(data: dict[str, Any], _=Depends(require_admin)):
     if not isinstance(msgs, list) or not msgs:
         raise HTTPException(400, "messages 不能为空")
     body = {"model": "preview", "messages": json.loads(json.dumps(msgs, ensure_ascii=False))}
-    saved = caveman.compress_body(body)
+    # compress_body 返回 (body, saved)，这里要的是省略的字符数。
+    _, saved = caveman.compress_body(body)
     before = json.dumps(msgs, ensure_ascii=False)
     after = json.dumps(body["messages"], ensure_ascii=False)
     return {"saved_chars": saved, "before_chars": len(before), "after_chars": len(after),
