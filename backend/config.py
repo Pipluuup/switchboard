@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .paths import data_dir
 
@@ -20,6 +20,10 @@ DATA_DIR = data_dir()
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 Protocol = Literal["anthropic", "openai", "responses", "gemini"]
+
+# Say less（voice）三态：off=不注入 / on=总是注入 / auto=按条件自动判定
+VoiceMode = Literal["off", "on", "auto"]
+VOICE_MODES = ("off", "on", "auto")
 
 
 def new_id(prefix: str = "") -> str:
@@ -134,10 +138,23 @@ class Settings(BaseModel):
     # 缓存感知：对支持 prompt cache 的上游自动弱化压缩（放大保留窗口、提高阈值），
     # 避免改写可缓存前缀导致命中价失效
     caveman_cache_aware: bool = True
-    # 缓存优先时仍注入 Say less（默认否：改写 system 会破坏缓存前缀）
-    voice_ignore_cache: bool = False
     # Say less（voice）：注入「电报体回复」规则到 system，减少输出 token
-    voice_enabled: bool = False
+    #   off  = 永不注入
+    #   on   = 总是注入（不管缓存）
+    #   auto = 按请求实际情况自动判定（默认）：满足条件才注入
+    voice_mode: VoiceMode = "auto"
+    # auto 模式下：请求输入 token 低于该值时不注入（短问答不值得为 400 token 规则买单）
+    voice_auto_min_tokens: int = 2000
+    # auto 模式下：上游支持 prompt cache 时是否仍注入（默认否——改写 system 会破坏缓存前缀）
+    voice_ignore_cache: bool = False
+    # auto 模式下：会话消息数达到该值才注入（长会话输出多，规则更划算）
+    voice_auto_min_messages: int = 4
+
+    @field_validator("voice_mode", mode="before")
+    @classmethod
+    def _norm_voice_mode(cls, v: Any) -> str:
+        """非法值一律回落到 auto（而不是静默变成「关」）。"""
+        return v if v in VOICE_MODES else "auto"
 
 
 class ClientProfile(BaseModel):
@@ -173,12 +190,17 @@ class ConfigStore:
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
+                migrated = self._migrate_settings(raw.get("settings") or {})
                 cfg = Config.model_validate(raw)
                 # 运行期状态不继承旧值
                 for up in cfg.upstreams:
                     up.healthy = True
                     up.consecutive_failures = 0
                     up.cooldown_until = 0.0
+                if migrated:
+                    # 把迁移结果落盘，免得每次启动都重新迁移一遍
+                    self.config = cfg
+                    self.save()
                 return cfg
             except Exception as e:  # noqa: BLE001
                 backup = self.path + f".broken.{int(time.time())}"
@@ -188,6 +210,26 @@ class ConfigStore:
                     pass
                 print(f"[config] 配置文件解析失败，已备份为 {backup}: {e}")
         return self._default_config()
+
+    @staticmethod
+    def _migrate_settings(s: dict[str, Any]) -> bool:
+        """把旧版布尔设置迁移到新的三态设置（原地改 raw dict），返回是否改过。
+
+        旧版 Say less 只有 voice_enabled 一个布尔：
+        - 旧值 true  → 新模式 "on"（用户明确要开，别擅自改语义）
+        - 旧值 false → 新模式 "off"（同上）
+        - 没有该键  → 保持默认 "auto"
+
+        旧版另有 voice_ignore_cache（缓存优先时仍注入），语义在新版保留。
+        """
+        if "voice_mode" in s:
+            return False
+        if "voice_enabled" not in s:
+            return False
+        s["voice_mode"] = "on" if s["voice_enabled"] else "off"
+        s.pop("voice_enabled", None)
+        print(f"[config] Say less 设置已迁移：voice_mode={s['voice_mode']}")
+        return True
 
     def _default_config(self) -> Config:
         cfg = Config()
@@ -414,6 +456,8 @@ class ConfigStore:
     # ---------- settings ----------
     def update_settings(self, data: dict[str, Any]) -> Settings:
         with self._lock:
+            # 旧布尔字段不再受理：前端已改三态，写进来只会污染配置
+            data = {k: v for k, v in data.items() if k != "voice_enabled"}
             for k, v in data.items():
                 if k in Settings.model_fields:
                     setattr(self.config.settings, k, v)

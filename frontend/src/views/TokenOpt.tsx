@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Row, Col, Card, Button, InputNumber, Switch, App, Space, Typography, Alert, Tag, Modal } from 'antd'
+import { Row, Col, Card, Button, InputNumber, Switch, App, Space, Typography, Alert, Tag, Modal, Segmented } from 'antd'
 import { SaveOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import { GET, PUT } from '../api/client'
-import type { Settings } from '../api/types'
+import type { Settings, VoiceMode } from '../api/types'
 
 /** Token 优化：Caveman 引擎（Read less，输入瘦身）+ Say less（voice，输出瘦身）+ RTK（客户端命令瘦身） */
 
@@ -12,11 +12,21 @@ type Draft = {
   caveman_min_chars: number
   caveman_compress_system: boolean
   caveman_cache_aware: boolean
-  voice_enabled: boolean
+  voice_mode: VoiceMode
+  voice_auto_min_tokens: number
+  voice_auto_min_messages: number
   voice_ignore_cache: boolean
 }
 
+/** Say less 三态：未启动 / 启动 / 自适应 */
+const VOICE_MODE_OPTIONS: { label: string; value: VoiceMode }[] = [
+  { label: '未启动', value: 'off' },
+  { label: '启动', value: 'on' },
+  { label: '自适应', value: 'auto' },
+]
+
 type RtkStatus = { installed: boolean; version: string; path?: string; error?: string }
+
 
 function RtkCard() {
   const { message } = App.useApp()
@@ -155,7 +165,9 @@ export default function TokenOpt() {
           caveman_min_chars: s.caveman_min_chars || 400,
           caveman_compress_system: !!s.caveman_compress_system,
           caveman_cache_aware: s.caveman_cache_aware !== false,
-          voice_enabled: !!s.voice_enabled,
+          voice_mode: s.voice_mode || 'auto',
+          voice_auto_min_tokens: s.voice_auto_min_tokens ?? 2000,
+          voice_auto_min_messages: s.voice_auto_min_messages ?? 4,
           voice_ignore_cache: !!s.voice_ignore_cache,
         }),
       )
@@ -173,7 +185,9 @@ export default function TokenOpt() {
         caveman_min_chars: Number(draft.caveman_min_chars) || 400,
         caveman_compress_system: draft.caveman_compress_system,
         caveman_cache_aware: draft.caveman_cache_aware,
-        voice_enabled: draft.voice_enabled,
+        voice_mode: draft.voice_mode,
+        voice_auto_min_tokens: Number(draft.voice_auto_min_tokens) || 0,
+        voice_auto_min_messages: Number(draft.voice_auto_min_messages) || 0,
         voice_ignore_cache: draft.voice_ignore_cache,
       })
       message.success('已保存')
@@ -259,11 +273,11 @@ export default function TokenOpt() {
           size="small"
           title="Say less（输出瘦身）"
           extra={
-            <Switch
-              checked={draft.voice_enabled}
-              checkedChildren="已启动"
-              unCheckedChildren="未启动"
-              onChange={(v) => set('voice_enabled', v)}
+            <Segmented
+              size="small"
+              value={draft.voice_mode}
+              options={VOICE_MODE_OPTIONS}
+              onChange={(v) => set('voice_mode', v as VoiceMode)}
             />
           }
         >
@@ -277,15 +291,66 @@ export default function TokenOpt() {
               type="info"
               showIcon
               style={{ fontSize: 12 }}
-              message="规则本身约占 400 token 输入，且会打断 system 的 prompt cache；输出 token 明显更省时才划算。建议长会话常开，短问答可关。"
+              message="规则本身约占 400 token 输入，且会打断 system 的 prompt cache；输出 token 明显更省时才划算。"
             />
             <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>
               只影响模型「说」多少，不碰你的提问内容；代码、命令等载荷永远原样保留。
             </Typography.Text>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
-              <Switch size="small" checked={draft.voice_ignore_cache} onChange={(v) => set('voice_ignore_cache', v)} />
-              缓存优先时仍然注入（会改写 system 前缀，代价是缓存命中下降）
-            </label>
+
+            {draft.voice_mode === 'auto' ? (
+              <>
+                <div style={{ fontSize: 12.5, color: '#93a0b8' }}>
+                  自适应判定条件（满足任一条即注入规则）
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <label style={{ fontSize: 12.5, color: '#93a0b8' }}>
+                    会话消息数达到
+                    <InputNumber
+                      style={{ width: '100%', marginTop: 4 }}
+                      min={0}
+                      max={1000}
+                      value={draft.voice_auto_min_messages}
+                      onChange={(v) => set('voice_auto_min_messages', v ?? 4)}
+                    />
+                  </label>
+                  <label style={{ fontSize: 12.5, color: '#93a0b8' }}>
+                    输入 token 达到
+                    <InputNumber
+                      style={{ width: '100%', marginTop: 4 }}
+                      min={0}
+                      max={1000000}
+                      step={500}
+                      value={draft.voice_auto_min_tokens}
+                      onChange={(v) => set('voice_auto_min_tokens', v ?? 2000)}
+                    />
+                  </label>
+                </div>
+                <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>
+                  短问答输出本来就短，规则那 400 token 输入不划算，所以默认跳过；
+                  长会话输出量大，规则省的多，才注入。每次请求是否注入、以及为什么，
+                  都会写进请求日志的「优化」列。
+                </Typography.Text>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                  <Switch size="small" checked={draft.voice_ignore_cache} onChange={(v) => set('voice_ignore_cache', v)} />
+                  缓存优先时仍然注入（会改写 system 前缀，代价是缓存命中下降）
+                </label>
+                <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>
+                  默认不勾：上游支持 prompt cache 时注入会改写可缓存前缀，命中价失效的损失
+                  可能大于省下的输出 token。
+                </Typography.Text>
+              </>
+            ) : (
+              <Alert
+                type={draft.voice_mode === 'on' ? 'warning' : 'info'}
+                showIcon
+                style={{ fontSize: 12 }}
+                message={
+                  draft.voice_mode === 'on'
+                    ? '「启动」= 每个请求都注入规则，包括短问答和缓存上游——规则本身的 400 token 输入每次都要付。'
+                    : '「未启动」= 完全不注入 Say less 规则。'
+                }
+              />
+            )}
           </Space>
         </Card>
       </Col>

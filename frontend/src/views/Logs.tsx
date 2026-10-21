@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Card, Table, Button, Input, Select, Tag, App, Space, Modal } from 'antd'
 import { SearchOutlined, ClearOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { GET, DEL } from '../api/client'
-import type { CavemanStats, LogDetail, LogItem, LogPage } from '../api/types'
+import type { CavemanStats, LogDetail, LogItem, LogPage, VoiceMode } from '../api/types'
 import { fmtTime } from '../utils/format'
 
 const PAGE_SIZE = 50
@@ -25,6 +25,13 @@ function parseStats(raw?: string): CavemanStats | null {
   } catch {
     return null
   }
+}
+
+/** Say less 三态模式的中文名 */
+const VOICE_MODE_LABEL: Record<VoiceMode, string> = {
+  off: '未启动',
+  on: '启动',
+  auto: '自适应',
 }
 
 /** 请求日志：对应旧版 loadLogs（筛选 / 搜索 / 分页 / 清空）+ 请求详情 */
@@ -125,7 +132,7 @@ export default function Logs() {
           { title: 'Tokens 入/出', width: 110, render: (_: unknown, r: LogItem) => `${r.input_tokens || 0} / ${r.output_tokens || 0}` },
           {
             title: '优化',
-            width: 110,
+            width: 190,
             render: (_: unknown, r: LogItem) => {
               const tags = []
               const st = parseStats(r.caveman_stats)
@@ -140,7 +147,22 @@ export default function Logs() {
                   tags.push(<Tag key="ca" color="gold" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>缓存优先</Tag>)
                 }
               }
-              if (r.voice_injected) tags.push(<Tag key="v" color="geekblue" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>Say less</Tag>)
+              // Say less：注入 / 自适应跳过，鼠标悬停看判定原因
+              const vd = st?.voice
+              if (r.voice_injected) {
+                tags.push(
+                  <Tag key="v" color="geekblue" style={{ fontSize: 10.5, marginInlineEnd: 4 }} title={vd?.reason}>
+                    Say less
+                    {vd?.mode === 'auto' ? ' · 自适应' : ''}
+                  </Tag>,
+                )
+              } else if (vd && vd.mode === 'auto') {
+                tags.push(
+                  <Tag key="v" color="default" style={{ fontSize: 10.5, marginInlineEnd: 4, opacity: 0.65 }} title={vd.reason}>
+                    Say less 跳过
+                  </Tag>,
+                )
+              }
               return tags.length ? tags : <span style={{ color: '#3a4356' }}>-</span>
             },
           },
@@ -191,6 +213,11 @@ export default function Logs() {
                   <span className="mono">
                     {parseStats(detail.caveman_stats)!.saved_chars} 字符（
                     {parseStats(detail.caveman_stats)!.saved_pct}%）
+                    {parseStats(detail.caveman_stats)!.voice_added_chars ? (
+                      <span style={{ color: '#8a94a8' }}>
+                        {' '}· 规则开销 +{parseStats(detail.caveman_stats)!.voice_added_chars} 字符
+                      </span>
+                    ) : null}
                   </span>
                   <span style={{ color: '#5c6880' }}>模式</span>
                   <span>
@@ -199,6 +226,28 @@ export default function Logs() {
                       <span style={{ color: '#5c6880' }}> · {parseStats(detail.caveman_stats)!.capabilities.join(' / ')}</span>
                     )}
                   </span>
+                  {parseStats(detail.caveman_stats)!.voice && (
+                    <>
+                      <span style={{ color: '#5c6880' }}>Say less</span>
+                      <span>
+                        <Tag
+                          color={parseStats(detail.caveman_stats)!.voice!.inject ? 'geekblue' : 'default'}
+                          style={{ fontSize: 10.5, marginInlineEnd: 6 }}
+                        >
+                          {VOICE_MODE_LABEL[parseStats(detail.caveman_stats)!.voice!.mode]}
+                          {' · '}
+                          {parseStats(detail.caveman_stats)!.voice!.inject ? '已注入' : '未注入'}
+                        </Tag>
+                        <span style={{ color: '#8a94a8' }}>{parseStats(detail.caveman_stats)!.voice!.reason}</span>
+                      </span>
+                      <span style={{ color: '#5c6880' }}>判定依据</span>
+                      <span className="mono" style={{ fontSize: 11.5 }}>
+                        {parseStats(detail.caveman_stats)!.voice!.messages} 条消息 ·{' '}
+                        {parseStats(detail.caveman_stats)!.voice!.in_tokens} input token
+                        {parseStats(detail.caveman_stats)!.voice!.cache_aware ? ' · 上游支持缓存' : ''}
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             )}

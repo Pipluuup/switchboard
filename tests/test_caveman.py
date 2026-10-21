@@ -163,6 +163,25 @@ def test_stats():
         _restore(old)
 
 
+def test_stats_voice_overhead_not_counted_as_saving():
+    """注入规则会让请求变大——不能把这份开销算成「省了多少」。
+
+    拿注入后的体积算节省率会得出负数（实测 -1234%），必须用
+    「压缩后、注入前」的中间体积来算压缩收益，规则开销单独记。
+    """
+    before = {"model": "m", "system": "原始 system", "messages": [{"role": "user", "content": "问题"}]}
+    after = json.loads(json.dumps(before))
+    compressed_chars = len(json.dumps(after, ensure_ascii=False))
+    after["system"] = after["system"] + "\n\n" + caveman.VOICE_RULES
+
+    st = caveman.stats(before, after, 0, voice_injected=True, compressed_chars=compressed_chars)
+    assert st["saved_pct"] == 0.0, f"没压缩就不该有节省率：{st['saved_pct']}"
+    assert st["voice_added_chars"] > 0, "规则开销应单独记"
+    assert st["new_chars"] > st["compressed_chars"]
+    print(f"✅ 规则开销单独计：压缩省 {st['saved_pct']}%，规则开销 +{st['voice_added_chars']} 字符")
+
+
+
 def test_cache_capable_detection():
     """上游缓存能力识别。"""
     class U:
@@ -174,6 +193,128 @@ def test_cache_capable_detection():
     print("✅ 上游缓存能力识别正确")
 
 
+# ---------------- Say less 三态 ----------------
+
+VOICE_KEYS = ("voice_mode", "voice_auto_min_tokens", "voice_auto_min_messages",
+              "voice_ignore_cache")
+
+
+def _voice(**over):
+    """临时改 Say less 设置（测试用）。"""
+    old = _enable(**over)
+    return old
+
+
+def test_voice_off_never_injects():
+    """「未启动」= 永不注入，条件再满足也不注入。"""
+    old = _voice(voice_mode="off")
+    try:
+        d = caveman.voice_decision(cache_aware=False, in_tokens=99999, message_count=99)
+        assert not d["inject"], "off 模式不该注入"
+        assert d["mode"] == "off"
+        body = {"model": "m", "system": "原有 system", "messages": []}
+        assert not caveman.inject_voice(body, d)
+        assert body["system"] == "原有 system", "system 被改写了"
+        print("✅ Say less「未启动」：任何条件都不注入")
+    finally:
+        _restore(old)
+
+
+def test_voice_on_always_injects():
+    """「启动」= 总是注入，哪怕上游支持缓存、请求也很小。"""
+    old = _voice(voice_mode="on")
+    try:
+        d = caveman.voice_decision(cache_aware=True, in_tokens=1, message_count=1)
+        assert d["inject"], "on 模式必须注入"
+        body = {"model": "m", "system": "原有 system", "messages": []}
+        assert caveman.inject_voice(body, d)
+        assert caveman._VOICE_MARKER in body["system"]
+        print("✅ Say less「启动」：无条件注入")
+    finally:
+        _restore(old)
+
+
+def test_voice_auto_skips_small_request():
+    """「自适应」：会话短且输入小 → 跳过（规则的 400 token 不划算）。"""
+    old = _voice(voice_mode="auto", voice_auto_min_tokens=2000, voice_auto_min_messages=4)
+    try:
+        d = caveman.voice_decision(cache_aware=False, in_tokens=100, message_count=2)
+        assert not d["inject"], "短请求不该注入"
+        assert "自适应跳过" in d["reason"]
+        print(f"✅ Say less「自适应」跳过小请求：{d['reason']}")
+    finally:
+        _restore(old)
+
+
+def test_voice_auto_injects_long_session():
+    """「自适应」：会话够长 → 注入。"""
+    old = _voice(voice_mode="auto", voice_auto_min_tokens=2000, voice_auto_min_messages=4)
+    try:
+        d = caveman.voice_decision(cache_aware=False, in_tokens=100, message_count=6)
+        assert d["inject"], "长会话该注入"
+        assert "自适应注入" in d["reason"]
+        print(f"✅ Say less「自适应」注入长会话：{d['reason']}")
+    finally:
+        _restore(old)
+
+
+def test_voice_auto_injects_big_input():
+    """「自适应」：消息少但输入很大 → 也注入（输出量必然不小）。"""
+    old = _voice(voice_mode="auto", voice_auto_min_tokens=2000, voice_auto_min_messages=4)
+    try:
+        d = caveman.voice_decision(cache_aware=False, in_tokens=5000, message_count=1)
+        assert d["inject"], "大输入该注入"
+        print(f"✅ Say less「自适应」注入大输入：{d['reason']}")
+    finally:
+        _restore(old)
+
+
+def test_voice_auto_respects_cache():
+    """「自适应」：上游支持缓存且没勾「缓存优先也注入」→ 跳过。"""
+    old = _voice(voice_mode="auto", voice_auto_min_tokens=2000, voice_auto_min_messages=4,
+                 voice_ignore_cache=False)
+    try:
+        d = caveman.voice_decision(cache_aware=True, in_tokens=99999, message_count=99)
+        assert not d["inject"], "缓存上游不该注入"
+        assert "prompt cache" in d["reason"]
+    finally:
+        _restore(old)
+
+    # 勾了「缓存优先也注入」→ 放行
+    old = _voice(voice_mode="auto", voice_auto_min_tokens=2000, voice_auto_min_messages=4,
+                 voice_ignore_cache=True)
+    try:
+        d = caveman.voice_decision(cache_aware=True, in_tokens=99999, message_count=99)
+        assert d["inject"], "勾了忽略缓存就该注入"
+        print("✅ Say less「自适应」：缓存上游默认跳过，勾选后放行")
+    finally:
+        _restore(old)
+
+
+def test_voice_decision_in_stats():
+    """决策结果要进 stats（日志「优化」列靠它展示判定依据）。"""
+    old = _voice(voice_mode="auto", voice_auto_min_tokens=2000, voice_auto_min_messages=4)
+    try:
+        d = caveman.voice_decision(cache_aware=False, in_tokens=100, message_count=2)
+        st = caveman.stats({"a": 1}, {"a": 1}, 0, voice_injected=False, voice=d)
+        assert "voice" in st
+        assert st["voice"]["inject"] is False
+        assert st["voice"]["mode"] == "auto"
+        assert st["voice"]["reason"]
+        print("✅ 决策结果进 stats：日志可展示判定依据")
+    finally:
+        _restore(old)
+
+
+def test_request_message_count():
+    """消息数统计：messages 与 Responses 的 input 都算。"""
+    body = {"messages": [{"role": "user"}, {"role": "assistant"}], "input": [{"role": "user"}]}
+    assert caveman.request_message_count(body) == 3
+    assert caveman.request_message_count({"messages": []}) == 0
+    assert caveman.request_message_count({}) == 0
+    print("✅ 请求消息数统计正确")
+
+
 if __name__ == "__main__":
     test_code_block_not_broken()
     test_url_and_path_preserved()
@@ -181,5 +322,14 @@ if __name__ == "__main__":
     test_cache_aware_weaker()
     test_deterministic()
     test_stats()
+    test_stats_voice_overhead_not_counted_as_saving()
     test_cache_capable_detection()
+    test_voice_off_never_injects()
+    test_voice_on_always_injects()
+    test_voice_auto_skips_small_request()
+    test_voice_auto_injects_long_session()
+    test_voice_auto_injects_big_input()
+    test_voice_auto_respects_cache()
+    test_voice_decision_in_stats()
+    test_request_message_count()
     print("\n全部通过")

@@ -396,11 +396,25 @@ async def handle_request(request: Request, in_protocol: str):
     cache_aware = any(caveman.upstream_supports_cache(u) for u in cands)
     body_before = json.loads(json.dumps(body, ensure_ascii=False, default=str))
     _, caveman_saved = caveman.compress_body(body, cache_aware=cache_aware)
-    voice_on = caveman.inject_voice(body, cache_aware=cache_aware)
+    # 压缩后的中间快照：注入 Say less 规则之前的体积。
+    # 规则本身会让请求变大（+约 1900 字符），拿最终体积算「节省率」
+    # 会得出负数——压缩收益与规则开销必须分开记。
+    compressed_chars = len(json.dumps(body, ensure_ascii=False, default=str))
+    # Say less：先判这次请求要不要注入，再决定是否改写 system。
+    # 判定依据（模式 / 原因 / 本次输入量与消息数）一并进日志的「优化」列。
+    voice_dec = caveman.voice_decision(
+        cache_aware=cache_aware,
+        in_tokens=in_tokens_est,
+        message_count=caveman.request_message_count(body),
+    )
+    voice_on = caveman.inject_voice(body, voice_dec)
     caveman_stats = caveman.stats(body_before, body, caveman_saved,
-                                  cache_aware=cache_aware, voice_injected=voice_on)
+                                  cache_aware=cache_aware, voice_injected=voice_on,
+                                  voice=voice_dec, compressed_chars=compressed_chars)
     if voice_on:
-        print(f"[caveman] {model} voice 规则已注入（Say less）")
+        print(f"[caveman] {model} voice 规则已注入（Say less）— {voice_dec['reason']}")
+    elif voice_dec["mode"] == caveman.VOICE_AUTO:
+        print(f"[caveman] {model} 未注入 Say less — {voice_dec['reason']}")
     if caveman_saved:
         tag = "（缓存优先）" if cache_aware else ""
         print(f"[caveman] {model} <- {ck.name if ck else '匿名'} 瘦身 {caveman_saved} 字符"

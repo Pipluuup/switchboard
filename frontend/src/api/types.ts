@@ -146,14 +146,32 @@ export interface LogItem {
   caveman_stats?: string
 }
 
+/** Say less 三态模式 */
+export type VoiceMode = 'off' | 'on' | 'auto'
+
+/** Say less 本次请求的决策结果（caveman_stats.voice） */
+export interface VoiceDecision {
+  inject: boolean
+  mode: VoiceMode
+  reason: string
+  in_tokens: number
+  messages: number
+  cache_aware: boolean
+}
+
 /** 压缩统计（caveman_stats 字段解析后） */
 export interface CavemanStats {
   orig_chars: number
   new_chars: number
   saved_chars: number
   saved_pct: number
+  /** 压缩后、注入规则前的体积（老日志没有这个字段） */
+  compressed_chars?: number
+  /** 注入 Say less 规则带来的额外字符数（老日志没有这个字段） */
+  voice_added_chars?: number
   mode: 'normal' | 'cache-aware'
   capabilities: string[]
+  voice?: VoiceDecision
 }
 
 export interface LogDetail extends LogItem {
@@ -190,7 +208,9 @@ export interface Settings {
   caveman_min_chars: number
   caveman_compress_system: boolean
   caveman_cache_aware?: boolean
-  voice_enabled: boolean
+  voice_mode: VoiceMode
+  voice_auto_min_tokens: number
+  voice_auto_min_messages: number
   voice_ignore_cache?: boolean
 }
 

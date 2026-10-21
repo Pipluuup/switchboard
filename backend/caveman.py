@@ -341,11 +341,20 @@ def compress_body(body: dict, cache_aware: bool = False) -> tuple[dict, int]:
 
 
 def stats(body_before: dict, body_after: dict, saved: int,
-          cache_aware: bool = False, voice_injected: bool = False) -> dict:
+          cache_aware: bool = False, voice_injected: bool = False,
+          voice: dict[str, Any] | None = None,
+          compressed_chars: int | None = None) -> dict:
     """压缩统计：原始/压缩后字符数、节省率、命中能力、模式。
 
     供日志「优化」列与详情页展示——比单纯的「省了多少字符」更能说明
     这次压缩到底做了什么。
+
+    `voice` 是 voice_decision() 的结果：带上模式与判定原因，日志里
+    才能看出「这次为什么注入 / 为什么没注入」。
+
+    `compressed_chars` 是「压缩完、注入规则前」的大小。注入 Say less 规则
+    本身会让请求变长（+约 1900 字符），如果拿注入后的体积去算节省率，
+    会得出「省了 -1234%」这种荒唐数字——所以压缩收益和规则开销分开算。
     """
     def _size(b: dict) -> int:
         try:
@@ -355,7 +364,11 @@ def stats(body_before: dict, body_after: dict, saved: int,
 
     before = _size(body_before)
     after = _size(body_after)
-    pct = round((before - after) * 100.0 / before, 1) if before else 0.0
+    # 压缩后的体积：优先用调用方给的中间快照，退回整体体积
+    comp = compressed_chars if compressed_chars is not None else after
+    pct = round((before - comp) * 100.0 / before, 1) if before else 0.0
+    # 规则开销：注入后比压缩后多出来的部分（未注入则为 0）
+    voice_added = max(0, after - comp)
     caps: list[str] = []
     if saved:
         caps.append("结构感知压缩")
@@ -363,14 +376,19 @@ def stats(body_before: dict, body_after: dict, saved: int,
         caps.append("缓存优先")
     if voice_injected:
         caps.append("Say less")
-    return {
+    out = {
         "orig_chars": before,
         "new_chars": after,
+        "compressed_chars": comp,
         "saved_chars": saved,
         "saved_pct": pct,
+        "voice_added_chars": voice_added,
         "mode": "cache-aware" if cache_aware else "normal",
         "capabilities": caps,
     }
+    if voice is not None:
+        out["voice"] = voice
+    return out
 
 
 # ---------------- 缓存感知 ----------------
@@ -404,16 +422,90 @@ def cache_aware_mode(upstream: Any) -> bool:
 
 # ---------------- Say less：voice 规则注入 ----------------
 
+# 三态模式
+VOICE_OFF = "off"    # 未启动：永不注入
+VOICE_ON = "on"      # 启动：总是注入
+VOICE_AUTO = "auto"  # 自适应：满足条件才注入
 
-def inject_voice(body: dict, cache_aware: bool = False) -> bool:
-    """按设置把「电报体回复」规则附加到请求的 system（已注入过则跳过）。
 
-    `cache_aware=True` 时默认跳过：改写 system 会改写可缓存前缀。
-    只有用户显式开启「缓存优先也注入 Say less」才注入。
+def request_message_count(body: dict) -> int:
+    """请求里的消息条数（messages + Responses 的 input 数组）。"""
+    n = 0
+    msgs = body.get("messages")
+    if isinstance(msgs, list):
+        n += len(msgs)
+    items = body.get("input")
+    if isinstance(items, list):
+        n += len(items)
+    return n
+
+
+def voice_decision(cache_aware: bool = False, in_tokens: int = 0,
+                   message_count: int = 0) -> dict[str, Any]:
+    """判定本次请求要不要注入 Say less 规则，返回决策结果与判定依据。
+
+    模式：
+    - off（未启动）：永不注入
+    - on（启动）  ：总是注入
+    - auto（自适应）：满足条件才注入——默认模式
+
+    auto 的判定顺序：
+    1. 上游支持 prompt cache 且用户没勾「缓存优先也注入」→ 跳过。
+       注入会改写 system 前缀，让可缓存前缀失效；命中价差大的上游
+       （DeepSeek 命中价约原价 1/10）损失可能大于规则省下的输出。
+    2. 会话既不够长、输入也不够大 → 跳过。
+       短问答的输出本来就短，规则那约 400 token 的输入不划算。
+    3. 其余 → 注入（会话够长或输入够大，说明这轮输出量不小，规则划算）。
+
+    返回字段同时用于日志展示，所以 reason 要写成人话。
     """
-    if not store.config.settings.voice_enabled:
-        return False
-    if cache_aware and not store.config.settings.voice_ignore_cache:
+    st = store.config.settings
+    mode = st.voice_mode
+
+    def _make(inject: bool, reason: str) -> dict[str, Any]:
+        return {
+            "inject": inject,
+            "mode": mode,
+            "reason": reason,
+            "in_tokens": in_tokens,
+            "messages": message_count,
+            "cache_aware": cache_aware,
+        }
+
+    if mode == VOICE_OFF:
+        return _make(False, "未启动：模式设为「未启动」，不注入")
+    if mode == VOICE_ON:
+        return _make(True, "已启动：模式设为「启动」，无条件注入")
+
+    # ---- auto：先看缓存，再看这次请求值不值得 ----
+    if cache_aware and not st.voice_ignore_cache:
+        return _make(False, "自适应跳过：上游支持 prompt cache，注入会改写可缓存前缀"
+                            "（可在设置里勾「缓存优先也注入」放行）")
+
+    min_tok = max(0, st.voice_auto_min_tokens)
+    min_msg = max(0, st.voice_auto_min_messages)
+    big_tokens = in_tokens >= min_tok
+    many_msgs = message_count >= min_msg
+    if not big_tokens and not many_msgs:
+        return _make(False, f"自适应跳过：会话 {message_count} 条消息、输入 {in_tokens} token，"
+                            f"均未达阈值（需 {min_msg} 条 / {min_tok} token）")
+    why = []
+    if many_msgs:
+        why.append(f"会话 {message_count} 条消息")
+    if big_tokens:
+        why.append(f"输入 {in_tokens} token")
+    return _make(True, "自适应注入：" + "、".join(why))
+
+
+def inject_voice(body: dict, decision: dict[str, Any] | None = None) -> bool:
+    """把「电报体回复」规则附加到请求的 system（已注入过则跳过）。
+
+    `decision` 由 voice_decision() 给出；不传就现场判一次。
+    返回 True 表示本次确实注入了规则。
+    """
+    if decision is None:
+        decision = voice_decision()
+    if not decision.get("inject"):
         return False
     if isinstance(body.get("system"), str):
         if _VOICE_MARKER in body["system"]:
