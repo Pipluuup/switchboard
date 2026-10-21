@@ -86,6 +86,21 @@ def gateway_base() -> str:
 # ------------------------------------------------------------------ 应用
 
 
+# Claude Code 的档位变量。_MODEL 是真正发给网关的模型名，_MODEL_NAME
+# 只是 UI 徽章上的显示名（Claude Code 里 label 优先取 _MODEL_NAME）。
+# 两个都要写，否则徽章会一直显示上一次残留的旧模型名。
+CLAUDE_TIERS = ("SONNET", "HAIKU", "OPUS", "FABLE")
+
+# 会绕过档位模型、单独决定实际请求模型的旁路变量。
+# 留着它们 = 客户端里残留的旧供应商模型名又会把请求带偏，
+# 所以一键接入时必须清掉。
+CLAUDE_BYPASS_VARS = (
+    "ANTHROPIC_DEFAULT_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+
+
 def _apply_claude(profile: dict, base: str, key: str) -> str:
     """写 Claude Code 的 settings.json（只动 env 段，其余原样保留）。"""
     path = _home(CLIENTS["claude"]["config_path"])
@@ -101,8 +116,18 @@ def _apply_claude(profile: dict, base: str, key: str) -> str:
     env["ANTHROPIC_BASE_URL"] = base
     env["ANTHROPIC_AUTH_TOKEN"] = key
     if model:
-        for tier in ("SONNET", "HAIKU", "OPUS", "FABLE"):
+        for tier in CLAUDE_TIERS:
             env[f"ANTHROPIC_DEFAULT_{tier}_MODEL"] = model
+            # 显示名跟着别名走：徽章显示的就是这个，而不是网关侧的真实上游名。
+            # 不写的话，settings.json 里旧的 _MODEL_NAME 会一直留在徽章上。
+            env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_NAME"] = model
+        # 主模型也要同步：否则客户端残留的其他供应商模型名（如方舟的
+        # ark-code-latest）会覆盖档位模型，请求到不了我们想去的上游。
+        env["ANTHROPIC_MODEL"] = model
+        data["model"] = model
+        # 旁路变量优先级高于档位变量，残留值必须清掉。
+        for var in CLAUDE_BYPASS_VARS:
+            env.pop(var, None)
     env.setdefault("API_TIMEOUT_MS", "3000000")
     env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     data["env"] = env
