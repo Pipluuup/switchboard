@@ -26,12 +26,28 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ---- 单元测试（无需额外依赖）----
       - name: Converter tests
         run: python tests/test_converter.py
+
+      - name: Responses converter tests
+        run: python tests/test_responses_converter.py
 
       - name: Usage window tests
         run: python tests/test_usage.py
 
+      - name: Caveman engine tests
+        run: python tests/test_caveman.py
+
+      - name: Client setup tests
+        run: python tests/test_client_setup.py
+
+      # 前端 ↔ 后端契约：API 路径 / 协议枚举 / 视图对齐。
+      # 纯静态检查（读源码比对），不需要 Node。
+      - name: Frontend contract tests
+        run: python tests/test_frontend_contract.py
+
+      # ---- E2E ----
       - name: E2E tests
         run: |
           python run.py --no-browser --port 8000 &
@@ -41,3 +57,37 @@ jobs:
             sleep 1
           done
           python tests/test_e2e.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+        working-directory: frontend
+
+      # 构建产物输出到 web/（后端与 PyInstaller 都只认这个目录）。
+      # 顺带验证产物与仓库里已提交的是否一致——不一致说明有人改了
+      # frontend/src 却忘了跑 npm run build。
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+      - name: Check web/ build output is up to date
+        run: |
+          if ! git diff --quiet -- web/; then
+            echo "::error::web/ 与 frontend/src 不一致——请在 frontend/ 跑 npm run build 后提交"
+            git diff --stat -- web/
+            exit 1
+          fi
