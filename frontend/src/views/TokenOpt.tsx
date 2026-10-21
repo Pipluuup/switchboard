@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Row, Col, Card, Button, InputNumber, Switch, App, Space, Typography, Alert, Tag, Modal, Segmented } from 'antd'
+import { Row, Col, Card, Button, Input, InputNumber, Switch, App, Space, Typography, Alert, Tag, Modal, Segmented } from 'antd'
 import { SaveOutlined, QuestionCircleOutlined } from '@ant-design/icons'
-import { GET, PUT } from '../api/client'
+import { GET, POST, PUT } from '../api/client'
 import type { Settings, VoiceMode } from '../api/types'
 
 /** Token 优化：Caveman 引擎（Read less，输入瘦身）+ Say less（voice，输出瘦身）+ RTK（客户端命令瘦身） */
@@ -27,6 +27,120 @@ const VOICE_MODE_OPTIONS: { label: string; value: VoiceMode }[] = [
 
 type RtkStatus = { installed: boolean; version: string; path?: string; error?: string }
 
+/** 压缩预览结果（后端 /api/caveman/preview 的响应） */
+type PreviewResult = {
+  saved_chars: number
+  before_chars: number
+  after_chars: number
+  messages: { role: string; content: unknown }[]
+}
+
+/**
+ * 压缩预览：把一段示例对话丢给引擎跑一次，肉眼对比「模型实际会收到什么」。
+ * 只调用 /api/caveman/preview（不转发、不入库），压缩强度取当前已保存的设置。
+ */
+function PreviewCard() {
+  const { message } = App.useApp()
+  const [open, setOpen] = useState(false)
+  const [input, setInput] = useState(
+    '请把这段话读一遍，然后只回复「好的」。\n' + '这是一段比较长的历史内容，用来触发压缩。\n'.repeat(60)
+  )
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<PreviewResult | null>(null)
+
+  const run = async () => {
+    setBusy(true)
+    try {
+      const messages = [
+        { role: 'user', content: '帮我看看这段日志' },
+        { role: 'assistant', content: input },
+        { role: 'user', content: '谢谢，总结一下要点' },
+      ]
+      const r = await POST<PreviewResult>('/api/caveman/preview', { messages })
+      setResult(r)
+    } catch (e) {
+      message.error('预览失败：' + (e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pct = result && result.before_chars > 0
+    ? Math.max(0, Math.round((1 - result.after_chars / result.before_chars) * 100))
+    : 0
+
+  return (
+    <Card
+      size="small"
+      title="压缩预览"
+      extra={
+        <Button size="small" onClick={() => setOpen(true)}>
+          打开预览
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0, lineHeight: 1.7 }}>
+        不转发、不入库：只把示例对话交给引擎跑一次，让你直接看到「模型实际会收到什么」，
+        再决定保留窗口和阈值要调成多少。
+      </Typography.Paragraph>
+
+      <Modal
+        title="压缩预览"
+        open={open}
+        onCancel={() => setOpen(false)}
+        width={760}
+        footer={
+          <Space>
+            <Button onClick={() => setOpen(false)}>关闭</Button>
+            <Button type="primary" loading={busy} onClick={run}>
+              跑一次压缩
+            </Button>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <div>
+            <div style={{ fontSize: 12.5, marginBottom: 4 }}>示例长消息（会被压的那一条）</div>
+            <Input.TextArea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              autoSize={{ minRows: 4, maxRows: 10 }}
+              style={{ fontSize: 12 }}
+            />
+          </div>
+
+          {result && (
+            <div>
+              <Space size={8} style={{ marginBottom: 6 }}>
+                <Tag color="green">节省 {result.saved_chars} 字符</Tag>
+                <Tag>压缩率 {pct}%</Tag>
+                <Tag>
+                  {result.before_chars} → {result.after_chars} 字符
+                </Tag>
+              </Space>
+              <pre
+                style={{
+                  maxHeight: 320,
+                  overflow: 'auto',
+                  fontSize: 11.5,
+                  lineHeight: 1.6,
+                  background: '#11151f',
+                  border: '1px solid #303950',
+                  borderRadius: 6,
+                  padding: 10,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {JSON.stringify(result.messages, null, 2)}
+              </pre>
+            </div>
+          )}
+        </Space>
+      </Modal>
+    </Card>
+  )
+}
 
 function RtkCard() {
   const { message } = App.useApp()
@@ -267,6 +381,9 @@ export default function TokenOpt() {
             />
           </Space>
         </Card>
+      </Col>
+      <Col xs={24}>
+        <PreviewCard />
       </Col>
       <Col xs={24}>
         <Card
