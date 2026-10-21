@@ -328,13 +328,17 @@ async def handle_request(request: Request, in_protocol: str):
     # 压缩旧消息会改写「system + 早期消息」这段可缓存前缀，命中价失效的损失
     # 可能大于压缩收益（DeepSeek 命中价约为原价 1/10）。宁可少省，也不改前缀。
     cache_aware = any(caveman.upstream_supports_cache(u) for u in cands)
+    body_before = json.loads(json.dumps(body, ensure_ascii=False, default=str))
     _, caveman_saved = caveman.compress_body(body, cache_aware=cache_aware)
     voice_on = caveman.inject_voice(body, cache_aware=cache_aware)
+    caveman_stats = caveman.stats(body_before, body, caveman_saved,
+                                  cache_aware=cache_aware, voice_injected=voice_on)
     if voice_on:
         print(f"[caveman] {model} voice 规则已注入（Say less）")
     if caveman_saved:
         tag = "（缓存优先）" if cache_aware else ""
-        print(f"[caveman] {model} <- {ck.name if ck else '匿名'} 瘦身 {caveman_saved} 字符{tag}")
+        print(f"[caveman] {model} <- {ck.name if ck else '匿名'} 瘦身 {caveman_saved} 字符"
+              f"（{caveman_stats['saved_pct']}%）{tag}")
     tried: list[str] = []
     last_err = ""
     last_status = 0
@@ -384,7 +388,8 @@ async def handle_request(request: Request, in_protocol: str):
                    input_tokens=in_tokens_est, latency_ms=latency,
                    error=f"HTTP {resp.status_code}: {text[:300]}",
                    request_body=req_capture, response_body=_cap_detail(text),
-                   caveman_saved=caveman_saved, voice_injected=int(voice_on))
+                   caveman_saved=caveman_saved, voice_injected=int(voice_on),
+                   caveman_stats=json.dumps(caveman_stats, ensure_ascii=False))
             return err_response(in_protocol, f"上游返回错误：{text[:400]}",
                                 resp.status_code, "api_error")
 
@@ -411,6 +416,7 @@ async def handle_request(request: Request, in_protocol: str):
                 request_body=req_capture,
                 response_body=_resp_summary(captured, out_obj, up.protocol, tin, tout),
                 caveman_saved=caveman_saved, voice_injected=int(voice_on),
+                caveman_stats=json.dumps(caveman_stats, ensure_ascii=False),
             )
             pool.report_success(up, int((time.time() - up_start) * 1000))
             if ck:
@@ -492,7 +498,8 @@ async def handle_request(request: Request, in_protocol: str):
            input_tokens=in_tokens_est, latency_ms=latency,
            error=last_err[:500] or "全部上游均不可用",
            request_body=req_capture, response_body="",
-           caveman_saved=caveman_saved, voice_injected=int(voice_on))
+           caveman_saved=caveman_saved, voice_injected=int(voice_on),
+           caveman_stats=json.dumps(caveman_stats, ensure_ascii=False))
     return err_response(
         in_protocol,
         f"所有上游调用失败（已尝试 {len(tried)} 个）：{last_err[:300]}",

@@ -55,6 +55,61 @@ def _squeeze(text: str) -> str:
     return re.sub(r"[ \t]+\n", "\n", text)
 
 
+# ---------------- 片段保护（tombstone） ----------------
+#
+# 压缩时如果直接头尾截断，代码块 / URL / 路径会被腰斩——编码场景下模型读到
+# 的是断掉的代码，比不压缩还糟。做法（参考 OmniRoute 的 tombstone 思路）：
+# 1. 压缩前把受保护的片段摘出来，换成短占位符
+# 2. 对剩余文本做压缩
+# 3. 把片段原样缝回去
+#
+# 受保护片段：围栏代码块、行内代码、URL、文件路径、标识符常量。
+
+_FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.S)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_URL_RE = re.compile(r"https?://[^\s<>\"'）)，。；、]+")
+_PATH_RE = re.compile(
+    r"(?<![\w/])(?:[~.$]*/)?(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8}(?::\d+)?"
+    r"(?:/[\w.-]+)*"
+)
+_CONST_RE = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+
+_TOMBSTONE_FMT = "{i}"
+
+
+class _Protector:
+    """把受保护片段摘成占位符，压缩后原样缝回。"""
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+
+    def _stash(self, s: str) -> str:
+        self.parts.append(s)
+        return _TOMBSTONE_FMT.format(i=len(self.parts) - 1)
+
+    def protect(self, text: str) -> str:
+        """摘出受保护片段，返回带占位符的文本。"""
+        if not text:
+            return text
+        for rx in (_FENCE_RE, _INLINE_CODE_RE, _URL_RE, _PATH_RE, _CONST_RE):
+            text = rx.sub(lambda m: self._stash(m.group(0)), text)
+        return text
+
+    def restore(self, text: str) -> str:
+        """把占位符换回原文。"""
+        if not text or not self.parts:
+            return text
+        # 反复替换：占位符可能被压缩逻辑切开（罕见），多轮收敛
+        for _ in range(4):
+            new = re.sub(r"(\d+)",
+                         lambda m: self.parts[int(m.group(1))] if int(m.group(1)) < len(self.parts) else m.group(0),
+                         text)
+            if new == text:
+                break
+            text = new
+        return text
+
+
 # ---------------- 格式感知压缩（Read less 增强） ----------------
 
 
@@ -113,6 +168,7 @@ def _shrink_text(text: str, min_chars: int) -> tuple[str, int]:
     """超长文本压缩：先试 JSON 结构化，再试日志行压缩，兜底「头 + 省略标记 + 尾」。
 
     低于阈值的文本只做空白折叠。
+    受保护片段（代码块 / URL / 路径 / 常量）先摘成占位符，压缩完原样缝回。
     """
     if len(text) < min_chars:
         t = _squeeze(text)
@@ -125,6 +181,19 @@ def _shrink_text(text: str, min_chars: int) -> tuple[str, int]:
     tail = max(32, int(min_chars * 0.25))
     omit = len(text) - head - tail
     return text[:head] + _MARK.format(n=omit) + text[-tail:], omit
+
+
+def _shrink_text_protected(text: str, min_chars: int, light: bool = False) -> tuple[str, int]:
+    """带片段保护的压缩：先摘出受保护片段，压缩剩余部分，最后原样缝回。"""
+    prot = _Protector()
+    masked = prot.protect(text)
+    if light:
+        new, n = _shrink_text_light(masked, min_chars)
+    else:
+        new, n = _shrink_text(masked, min_chars)
+    restored = prot.restore(new)
+    # 缝回后可能变长（占位符比原文短），按实际长度修正节省量
+    return restored, max(0, len(text) - len(restored))
 
 
 def _shrink_text_light(text: str, min_chars: int) -> tuple[str, int]:
@@ -156,12 +225,12 @@ def _shrink_block_list(blocks: list, min_chars: int, light: bool = False) -> int
         if not isinstance(b, dict):
             continue
         if b.get("type") == "text" and isinstance(b.get("text"), str):
-            new, n = fn(b["text"], min_chars)
+            new, n = _shrink_text_protected(b["text"], min_chars, light)
             b["text"], saved = new, saved + n
         elif b.get("type") == "tool_result":
             c = b.get("content")
             if isinstance(c, str):
-                new, n = fn(c, min_chars)
+                new, n = _shrink_text_protected(c, min_chars, light)
                 b["content"], saved = new, saved + n
             elif isinstance(c, list):
                 saved += _shrink_block_list(c, min_chars, light)
@@ -175,12 +244,65 @@ def _shrink_message(m: dict, min_chars: int, light: bool = False) -> int:
     """
     c = m.get("content")
     if isinstance(c, str):
-        new, n = (_shrink_text_light if light else _shrink_text)(c, min_chars)
+        new, n = _shrink_text_protected(c, min_chars, light)
         m["content"] = new
         return n
     if isinstance(c, list):
         return _shrink_block_list(c, min_chars, light)
     return 0
+
+
+def _tool_use_ids(m: dict) -> set[str]:
+    """取出消息里 tool_use 的 id（Anthropic blocks / OpenAI tool_calls）。"""
+    ids: set[str] = set()
+    c = m.get("content")
+    if isinstance(c, list):
+        for b in c:
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                ids.add(str(b["id"]))
+    for tc in (m.get("tool_calls") or []) if isinstance(m.get("tool_calls"), list) else []:
+        if isinstance(tc, dict) and tc.get("id"):
+            ids.add(str(tc["id"]))
+    return ids
+
+
+def _tool_result_ids(m: dict) -> set[str]:
+    """取出消息里 tool_result / tool 角色消息所对应的 tool_use id。"""
+    ids: set[str] = set()
+    c = m.get("content")
+    if isinstance(c, list):
+        for b in c:
+            if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                ids.add(str(b["tool_use_id"]))
+    if m.get("role") == "tool" and m.get("tool_call_id"):
+        ids.add(str(m["tool_call_id"]))
+    return ids
+
+
+def _compress_messages(msgs: list, min_chars: int, keep: int, light: bool) -> int:
+    """压缩窗口外消息，但保证 tool_use / tool_result 配对完整。
+
+    配对规则（对应 OmniRoute 的「结构完整性守卫」）：
+    - 一条消息含 tool_use → 它的 tool_result 所在消息**跳过压缩**，
+      否则会出现「有调用无结果」的悬空配对，部分 provider 会直接报错
+    - 一条消息含 tool_result → 同样跳过，保证它引用的调用仍完整
+    """
+    # 收集全部 tool_use id：若某个 tool_result 的配对调用还在窗口外，
+    # 就不能压这条 tool_result
+    protected_ids: set[str] = set()
+    for m in msgs:
+        if isinstance(m, dict):
+            protected_ids |= _tool_use_ids(m)
+
+    saved = 0
+    for m in msgs[:-keep] if len(msgs) > keep else []:
+        if not isinstance(m, dict):
+            continue
+        # 配对保护：含 tool_use 或 tool_result 的消息不压
+        if _tool_use_ids(m) or _tool_result_ids(m):
+            continue
+        saved += _shrink_message(m, min_chars, light)
+    return saved
 
 
 def compress_body(body: dict, cache_aware: bool = False) -> tuple[dict, int]:
@@ -189,6 +311,8 @@ def compress_body(body: dict, cache_aware: bool = False) -> tuple[dict, int]:
     `cache_aware=True` 时进入「缓存优先」模式：保留窗口放大、阈值提高，
     尽量少改写前缀——因为压缩旧消息恰好会改写可缓存的前缀（system + 早期消息），
     对命中价差大的上游（DeepSeek 命中价约原价 1/10）来说，缓存比压缩更值钱。
+
+    详细统计见 stats()（原始/压缩后字符数、节省率、命中引擎、模式）。
     """
     st = store.config.settings
     if not st.caveman_enabled:
@@ -203,16 +327,50 @@ def compress_body(body: dict, cache_aware: bool = False) -> tuple[dict, int]:
     if st.caveman_compress_system and not cache_aware:
         sys = body.get("system")
         if isinstance(sys, str):
-            new, n = _shrink_text(sys, min_chars)
+            new, n = _shrink_text_protected(sys, min_chars)
             body["system"], saved = new, saved + n
         elif isinstance(sys, list):
             saved += _shrink_block_list(sys, min_chars)
     msgs = body.get("messages")
-    if isinstance(msgs, list) and len(msgs) > keep:
-        for m in msgs[:-keep]:
-            if isinstance(m, dict):
-                saved += _shrink_message(m, min_chars, light)
+    if isinstance(msgs, list):
+        saved += _compress_messages(msgs, min_chars, keep, light)
     return body, saved
+
+
+# ---------------- 压缩统计 ----------------
+
+
+def stats(body_before: dict, body_after: dict, saved: int,
+          cache_aware: bool = False, voice_injected: bool = False) -> dict:
+    """压缩统计：原始/压缩后字符数、节省率、命中能力、模式。
+
+    供日志「优化」列与详情页展示——比单纯的「省了多少字符」更能说明
+    这次压缩到底做了什么。
+    """
+    def _size(b: dict) -> int:
+        try:
+            return len(json.dumps(b, ensure_ascii=False))
+        except Exception:  # noqa: BLE001
+            return 0
+
+    before = _size(body_before)
+    after = _size(body_after)
+    pct = round((before - after) * 100.0 / before, 1) if before else 0.0
+    caps: list[str] = []
+    if saved:
+        caps.append("结构感知压缩")
+    if cache_aware:
+        caps.append("缓存优先")
+    if voice_injected:
+        caps.append("Say less")
+    return {
+        "orig_chars": before,
+        "new_chars": after,
+        "saved_chars": saved,
+        "saved_pct": pct,
+        "mode": "cache-aware" if cache_aware else "normal",
+        "capabilities": caps,
+    }
 
 
 # ---------------- 缓存感知 ----------------

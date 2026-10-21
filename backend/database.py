@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
     request_body TEXT DEFAULT '',
     response_body TEXT DEFAULT '',
     caveman_saved INTEGER DEFAULT 0,
-    voice_injected INTEGER DEFAULT 0
+    voice_injected INTEGER DEFAULT 0,
+    caveman_stats TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON request_logs(ts);
 CREATE INDEX IF NOT EXISTS idx_logs_ok ON request_logs(ok);
@@ -66,6 +67,8 @@ class LogDB:
         for col in ("caveman_saved", "voice_injected"):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE request_logs ADD COLUMN {col} INTEGER DEFAULT 0")
+        if "caveman_stats" not in cols:
+            self._conn.execute("ALTER TABLE request_logs ADD COLUMN caveman_stats TEXT DEFAULT ''")
         self._conn.commit()
 
     def add(self, **kw: Any) -> None:
@@ -74,7 +77,7 @@ class LogDB:
             "in_protocol", "out_protocol", "request_model", "actual_model",
             "stream", "status", "ok", "input_tokens", "output_tokens",
             "latency_ms", "error", "request_body", "response_body",
-            "caveman_saved", "voice_injected",
+            "caveman_saved", "voice_injected", "caveman_stats",
         ]
         kw.setdefault("ts", time.time())
         vals = [kw.get(c, 0 if c in {"stream", "status", "ok", "input_tokens",
@@ -92,7 +95,7 @@ class LogDB:
         "id", "ts", "client_name", "upstream_name", "in_protocol", "out_protocol",
         "request_model", "actual_model", "stream", "status", "ok",
         "input_tokens", "output_tokens", "latency_ms", "error",
-        "caveman_saved", "voice_injected",
+        "caveman_saved", "voice_injected", "caveman_stats",
     )
 
     def query(self, limit: int = 100, offset: int = 0, ok: int | None = None,

@@ -143,6 +143,17 @@ export interface LogItem {
   error: string
   caveman_saved?: number
   voice_injected?: number
+  caveman_stats?: string
+}
+
+/** 压缩统计（caveman_stats 字段解析后） */
+export interface CavemanStats {
+  orig_chars: number
+  new_chars: number
+  saved_chars: number
+  saved_pct: number
+  mode: 'normal' | 'cache-aware'
+  capabilities: string[]
 }
 
 export interface LogDetail extends LogItem {

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Card, Table, Button, Input, Select, Tag, App, Space, Modal } from 'antd'
 import { SearchOutlined, ClearOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { GET, DEL } from '../api/client'
-import type { LogDetail, LogItem, LogPage } from '../api/types'
+import type { CavemanStats, LogDetail, LogItem, LogPage } from '../api/types'
 import { fmtTime } from '../utils/format'
 
 const PAGE_SIZE = 50
@@ -14,6 +14,16 @@ function pretty(s: string | undefined): string {
     return JSON.stringify(JSON.parse(s), null, 2)
   } catch {
     return s
+  }
+}
+
+/** 解析压缩统计（caveman_stats 是 JSON 字符串） */
+function parseStats(raw?: string): CavemanStats | null {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as CavemanStats
+  } catch {
+    return null
   }
 }
 
@@ -118,7 +128,18 @@ export default function Logs() {
             width: 110,
             render: (_: unknown, r: LogItem) => {
               const tags = []
-              if (r.caveman_saved) tags.push(<Tag key="c" color="cyan" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>瘦身 {(r.caveman_saved / 1000).toFixed(1)}k</Tag>)
+              const st = parseStats(r.caveman_stats)
+              if (r.caveman_saved) {
+                tags.push(
+                  <Tag key="c" color="cyan" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>
+                    瘦身 {(r.caveman_saved / 1000).toFixed(1)}k
+                    {st ? ` ${st.saved_pct}%` : ''}
+                  </Tag>,
+                )
+                if (st?.mode === 'cache-aware') {
+                  tags.push(<Tag key="ca" color="gold" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>缓存优先</Tag>)
+                }
+              }
               if (r.voice_injected) tags.push(<Tag key="v" color="geekblue" style={{ fontSize: 10.5, marginInlineEnd: 4 }}>Say less</Tag>)
               return tags.length ? tags : <span style={{ color: '#3a4356' }}>-</span>
             },
@@ -158,6 +179,29 @@ export default function Logs() {
               <span style={{ color: '#5c6880' }}>模型</span><span className="mono">{detail.request_model}{detail.actual_model && detail.actual_model !== detail.request_model ? ` → ${detail.actual_model}` : ''}</span>
               <span style={{ color: '#5c6880' }}>上游</span><span>{detail.upstream_name || '-'}</span>
             </div>
+            {parseStats(detail.caveman_stats) && (
+              <div>
+                <div style={{ color: '#5c6880', marginBottom: 4 }}>压缩统计</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: '4px 10px', fontSize: 12 }}>
+                  <span style={{ color: '#5c6880' }}>原始大小</span>
+                  <span className="mono">{(parseStats(detail.caveman_stats)!.orig_chars / 1000).toFixed(1)}k 字符</span>
+                  <span style={{ color: '#5c6880' }}>压缩后</span>
+                  <span className="mono">{(parseStats(detail.caveman_stats)!.new_chars / 1000).toFixed(1)}k 字符</span>
+                  <span style={{ color: '#5c6880' }}>节省</span>
+                  <span className="mono">
+                    {parseStats(detail.caveman_stats)!.saved_chars} 字符（
+                    {parseStats(detail.caveman_stats)!.saved_pct}%）
+                  </span>
+                  <span style={{ color: '#5c6880' }}>模式</span>
+                  <span>
+                    {parseStats(detail.caveman_stats)!.mode === 'cache-aware' ? '缓存优先' : '常规'}
+                    {parseStats(detail.caveman_stats)!.capabilities.length > 0 && (
+                      <span style={{ color: '#5c6880' }}> · {parseStats(detail.caveman_stats)!.capabilities.join(' / ')}</span>
+                    )}
+                  </span>
+                </div>
+              </div>
+            )}
             <div>
               <div style={{ color: '#5c6880', marginBottom: 4 }}>请求体（客户端 → 网关）</div>
               <pre className="code-block" style={{ maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>
