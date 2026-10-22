@@ -48,6 +48,8 @@ jobs:
         run: python tests/test_frontend_contract.py
 
       # ---- E2E ----
+      # 每个 e2e 脚本都会清空目标实例的全部上游/映射/Key，
+      # 所以各自跑在独立端口 + 独立数据目录的隔离实例上。
       - name: E2E tests
         run: |
           python run.py --no-browser --port 8000 &
@@ -56,7 +58,20 @@ jobs:
             curl -sf http://127.0.0.1:8000/healthz && break
             sleep 1
           done
-          python tests/test_e2e.py
+          SWITCHBOARD_BASE=http://127.0.0.1:8000 SWITCHBOARD_MOCK=http://127.0.0.1:8100/v1 \
+            python tests/test_e2e.py
+
+      # Say less 三态：独立实例（8124）+ 独立数据目录 + 独立 mock 端口（8110）。
+      - name: E2E voice tests
+        run: |
+          SWITCHBOARD_DATA_DIR=/tmp/switchboard-ci-voice python run.py --no-browser --port 8124 &
+          python tests/mock_upstream.py --port 8110 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8124/healthz && break
+            sleep 1
+          done
+          SWITCHBOARD_BASE=http://127.0.0.1:8124 SWITCHBOARD_MOCK=http://127.0.0.1:8110/v1 \
+            python tests/e2e_voice.py
 
   frontend:
     runs-on: ubuntu-latest
