@@ -96,4 +96,22 @@ async def index():
     return FileResponse(os.path.join(WEB_DIR, "index.html"))
 
 
-app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+class _RobustStaticFiles(StaticFiles):
+    """StaticFiles 加固：畸形 URL（含 * ? | 等非法文件名字符）会让 Windows 的
+    os.stat 抛 WinError 123，2026-10-21 曾把整个服务进程带崩。这里兜底为 404，
+    垃圾路径只影响那一个请求，不再影响进程。
+
+    两种异常都要捕：
+    - OSError：Windows 的非法文件名字符（WinError 123）等
+    - ValueError：路径里含 NUL 字节时 os.path.realpath 抛的
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except (OSError, ValueError):
+            from starlette.exceptions import HTTPException as _HTTPException
+            raise _HTTPException(status_code=404)
+
+
+app.mount("/", _RobustStaticFiles(directory=WEB_DIR, html=True), name="web")

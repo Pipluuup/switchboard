@@ -1,22 +1,30 @@
 """端到端测试：验证协议转换、鉴权、映射、故障切换、限流。
 
+⚠️ 开头的清场会**删光目标实例的全部上游/映射/Key**，必须跑隔离实例，
+   否则真实配置零接触（同 e2e_voice.py 的规约，见 docs/03）。
+
 前置：
-    1. 启动主服务   python run.py --no-browser --port 8000
+    1. 启动隔离实例
+       set SWITCHBOARD_DATA_DIR=<临时目录> && python run.py --no-browser --port 8000
     2. 启动模拟上游 python tests/mock_upstream.py --port 8100
 运行：
     python tests/test_e2e.py
+
+地址可用环境变量覆盖：SWITCHBOARD_BASE / SWITCHBOARD_MOCK
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
 import httpx
 
-BASE = "http://127.0.0.1:8000"
-MOCK_OPENAI = "http://127.0.0.1:8100/v1"
-MOCK_ANTHROPIC = "http://127.0.0.1:8100/v1"
+BASE = os.environ.get("SWITCHBOARD_BASE", "http://127.0.0.1:8000").rstrip("/")
+_MOCK = os.environ.get("SWITCHBOARD_MOCK", "http://127.0.0.1:8100/v1").rstrip("/")
+MOCK_OPENAI = _MOCK
+MOCK_ANTHROPIC = _MOCK
 
 PASS, FAIL = "PASS", "FAIL"
 results: list[tuple[str, bool, str]] = []
@@ -286,6 +294,22 @@ async def main():
                              "messages": [{"role": "user", "content": "hi"}]})
         check("白名单外模型被拒绝 403", r.status_code == 403, str(r.status_code))
         await c.delete(f"{BASE}/api/keys/{wl['id']}")
+
+        # ------------------------------------------------- 15. 畸形静态路径
+        # 畸形 URL（含 * ? | 等非法文件名字符、以及 NUL 字节）曾经让
+        # Windows 的 os.stat / os.path.realpath 抛异常，把整个服务进程带崩。
+        # 现在统一兜底成 404：垃圾路径只影响那一个请求。
+        print("\n[15] 畸形静态路径不崩服务")
+        bad_paths = ["/..%2f..%2f..%2fetc%2fpasswd", "/%2e%2e%2f%2e%2e%2f",
+                     "/foo|bar", "/a?b", "/x*y", "/con%00.txt", "/%00"]
+        codes = []
+        for p in bad_paths:
+            rr = await c.get(f"{BASE}{p}")
+            codes.append(rr.status_code)
+        check("畸形路径返回 404 而非 5xx",
+              all(x == 404 for x in codes), str(codes))
+        rr = await c.get(f"{BASE}/healthz")
+        check("畸形路径之后服务仍存活", rr.status_code == 200, str(rr.status_code))
 
         await c.delete(f"{BASE}/api/keys/{ck['id']}")
 
