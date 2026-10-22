@@ -1,12 +1,11 @@
 """把 OpenCode Go 接入为上游（一条命令搞定）。
 
-OpenCode Go 把模型分散在三个端点上，本代理只支持其中两个，因此这里建**两条上游**
-（同一 Base URL，不同协议），靠「支持的模型」白名单分流：
+OpenCode Go 把模型分散在三个端点上，本代理三个都支持，因此这里建**三条上游**
+（同一组凭据，不同协议与 Base URL），靠「支持的模型」白名单分流：
 
   /v1/chat/completions → ChatGPT 协议上游（GLM / Kimi / LongCat / DeepSeek / MiMo / Hy / Space Bunny）
   /v1/messages         → Anthropic 协议上游（MiniMax / Qwen）
-
-  /v1/responses        → 本代理不支持，Grok / GPT Luna / Muse Spark 无法接入
+  /v1/responses        → OpenAI Responses 协议上游（Grok / GPT Luna / Muse Spark，2026-10-21 起支持）
 
 脚本是幂等的：按名称查找已有上游并更新，不会重复创建。
 
@@ -25,6 +24,8 @@ import urllib.error
 import urllib.request
 
 GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+# Responses 端点在另一个域名下（不是 zen/go 的同一条路径）
+GO_RESPONSES_BASE_URL = "https://opencode.ai/inference/go/v1"
 
 # 走 /v1/chat/completions 的模型（上游协议填 openai）
 CHAT_MODELS = [
@@ -41,8 +42,13 @@ CHAT_MODELS = [
 # 走 /v1/messages 的模型（上游协议填 anthropic）
 MESSAGES_MODELS = ["minimax-m3", "minimax-m2.7", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus"]
 
+# 走 /v1/responses 的模型（上游协议填 responses）
+RESPONSES_MODELS = ["grok-4.7", "grok-4.6", "gpt-6-luna", "gpt-5.6-luna",
+                    "muse-spark-1.3", "muse-spark-1.2-contributor"]
+
 CHAT_UPSTREAM = "OpenCode Go (Chat)"
 MESSAGES_UPSTREAM = "OpenCode Go (Messages)"
+RESPONSES_UPSTREAM = "OpenCode Go (Responses)"
 
 # 方便在 Claude Code / opencode 里用短别名调用 Go 的模型
 ALIASES = [
@@ -124,20 +130,23 @@ def main() -> int:
                 note="OpenCode Go：/v1/chat/completions 系列（GLM/Kimi/DeepSeek/MiMo/LongCat/Hy）")
     messages = dict(common, name=MESSAGES_UPSTREAM, protocol="anthropic", models=MESSAGES_MODELS,
                     note="OpenCode Go：/v1/messages 系列（MiniMax/Qwen）")
+    responses = dict(common, name=RESPONSES_UPSTREAM, protocol="responses",
+                     base_url=GO_RESPONSES_BASE_URL.rstrip("/"), models=RESPONSES_MODELS,
+                     note="OpenCode Go：/v1/responses 系列（Grok/GPT Luna/Muse Spark）")
 
     print(f"目标服务：{args.base}")
     print("=" * 60)
     print("  " + upsert_upstream(args.base, args.admin_token, chat, args.enable))
     print("  " + upsert_upstream(args.base, args.admin_token, messages, args.enable))
+    print("  " + upsert_upstream(args.base, args.admin_token, responses, args.enable))
 
     if not args.no_aliases:
         for alias, target, note in ALIASES:
             print("  " + upsert_mapping(args.base, args.admin_token, alias, target, note))
 
     print("=" * 60)
-    print("  未支持的模型（本代理没有 /v1/responses 路由）：")
-    print("    grok-4.7, grok-4.6, gpt-6-luna, gpt-5.6-luna,")
-    print("    muse-spark-1.3-contributor, muse-spark-1.2-contributor")
+    print("  Responses 端点的模型（Grok / GPT Luna / Muse Spark）已建为第三条上游，")
+    print("  客户端用 Responses 协议（如 Codex CLI）时会自动走它。")
     print()
     if not args.enable:
         print("  上游已建为「停用」状态。到管理界面「上游管理」逐条点「编辑」")

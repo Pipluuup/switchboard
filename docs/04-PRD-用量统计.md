@@ -1,7 +1,7 @@
 # 04 · PRD · 用量统计（5h/7d/30d 滚动窗口）
 
 > 关联代码：`backend/database.py`（USAGE_WINDOWS、`usage_windows()`）、
-> `backend/admin_routes.py`（`GET /api/usage`）、`web/app.js`（loadUsage/renderUsage）
+> `backend/admin_routes.py`（`GET /api/usage`）、`frontend/src/views/Usage.tsx`（`USAGE_WINDOWS` 常量、用量页渲染）
 
 ## 1. 需求背景
 
@@ -40,7 +40,7 @@ GET /api/usage  →
 }
 ```
 
-## 4. 前端行为（web/app.js）
+## 4. 前端行为（frontend/src/views/Usage.tsx）
 
 - 用量页三个窗口各一张卡片（颜色 5h=accent / 7d=purple / 30d=cyan）；
 - 窗口对比表 + 按所选窗口的模型份额条形图；

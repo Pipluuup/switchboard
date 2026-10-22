@@ -19,28 +19,42 @@ OpenCode Go（`https://opencode.ai/zen/go/v1`）把模型分布在**三个不同
 - Go 要求**专用 User-Agent** 和 **`x-opencode-session` 头**（影响路由与提示词缓存），
   通用 SDK UA 不行 → ✅ 已解决（2026-10-13）：代理检测 OpenCode 上游自动带
   `Switchboard/1.0` UA + 会话头（见下文「会话头实现」）；
-- 一个上游条目只能一个协议 → **同 base_url 建三条上游**，靠各自 `models` 白名单区分
+- 一个上游条目只能一个协议 → **建三条上游**，靠各自 `models` 白名单区分
   （`/v1/chat/completions` openai 协议、`/v1/messages` anthropic 协议、
-  `/v1/responses` responses 协议）。
+  `/v1/responses` responses 协议）。注意 Responses 端点在另一个域名下：
+  前两条是 `https://opencode.ai/zen/go/v1`，Responses 那条是
+  `https://opencode.ai/inference/go/v1`。
 
 ## 2. 上游条目设计
 
-**2026-10-13 白名单已按 `/v1/models` 实测刷新**（Go Key 实拉 39 个模型）：
+**当前 `scripts/import_opencode_go.py` 实际写入的白名单**（以脚本为准）：
 
-- Chat 端白名单扩到 **33 个**（新增 `glm-5.1`、`deepseek-flash`、`omen-alpha`、
-  `claude-haiku-5-5`、`minimax-m2.5/m2.7/m3`、`space-bunny`（原名 space-bunny-free）、
-  `step-5-preview-free`、`cat-jam-free`、`qwen3.6-plus`、`qwen3.7-max/plus`、
-  `qwen3.8-max/flash`）；
-- `/v1/responses` 专属（仍不可用）：grok-4.7/4.6、gpt-6-luna、gpt-5.6-luna、
-  muse-spark-1.3/1.2-contributor；
+| 上游 | protocol | base_url | models 数 |
+|---|---|---|---|
+| OpenCode Go (Chat) | `openai` | `https://opencode.ai/zen/go/v1` | 19 |
+| OpenCode Go (Messages) | `anthropic` | `https://opencode.ai/zen/go/v1` | 5 |
+| OpenCode Go (Responses) | `responses` | `https://opencode.ai/inference/go/v1` | 6 |
+
+- Chat 端 19 个：glm-5.3/5.3-flash/5.2、kimi-k3/k2.7-code/k2.6、
+  longcat-2.0/2.5-preview-free、deepseek-v4.1-flash/v4-pro/v4-flash/
+  v4-flash-vision-exp、mimo-v2.6-flash/pro、mimo-v2.5/pro、hy4-preview、hy3、
+  space-bunny-free；
+- Messages 端 5 个：minimax-m3、minimax-m2.7、qwen3.8-max、qwen3.8-flash、
+  qwen3.7-plus；
+- Responses 端 6 个：grok-4.7/4.6、gpt-6-luna、gpt-5.6-luna、muse-spark-1.3、
+  muse-spark-1.2-contributor；
 - Claude Code 客户端直连场景另有独立 `Deepseek` 上游
   （`https://api.deepseek.com/anthropic`，Anthropic 协议，模型 deepseek-flash /
   deepseek-v4-pro）。
 
-| 上游 | protocol | enabled | priority | models 数 | 覆盖 |
-|---|---|---|---|---|---|
-| OpenCode Go (Chat) | openai | 是 | 200 | 33 | glm-5.3/5.3-flash/5.2/5.1、kimi-k3/k2.7-code/k2.6、longcat-2.0/2.5-preview-free、deepseek-v4.1-flash/v4-pro/v4-flash/v4-flash-vision-exp/flash、mimo-v2.6-flash/pro、mimo-v2.5/pro、hy4-preview、hy3、omen-alpha、claude-haiku-5-5、minimax-m2.5/m2.7/m3、space-bunny、step-5-preview-free、cat-jam-free、qwen3.6-plus、qwen3.7-max/plus、qwen3.8-max/flash |
-| OpenCode Go (Messages) | anthropic | 否（待填 Key） | 200 | 5 | minimax-m3、minimax-m2.7、qwen3.8-max、qwen3.8-flash、qwen3.7-plus |
+> 历史上（2026-10-13）Chat 端白名单曾扩到 33 个，现已收敛为 19 个——以脚本里的
+> `CHAT_MODELS` 为准。改白名单改脚本，不改本表。
+
+| 上游 | protocol | enabled | priority | models 数 |
+|---|---|---|---|---|
+| OpenCode Go (Chat) | openai | 是 | 200 | 19 |
+| OpenCode Go (Messages) | anthropic | 否（待填 Key） | 200 | 5 |
+| OpenCode Go (Responses) | responses | 否（待填 Key） | 200 | 6 |
 
 `priority=200` 低于 CommandCode 的 100：同模型多上游可用时优先CommandCode，
 Go 作为扩容池。
@@ -59,10 +73,21 @@ Go 作为扩容池。
 
 ## 3. 模型别名（映射表）
 
-**2026-10-13 起映射精简为单条**：`Free → agnes-2.5-flash`（默认直通，走 Agnes 免费
-通道）。历史 `go-*` 别名（go-glm / go-kimi / go-deepseek / go-minimax / go-qwen /
-go-glm-5.1 / go-omen / go-claude-haiku 等）已删除——客户端模型名没有映射命中时，
-代理仍会按上游白名单自动调度，`glm-5.3` 等原始模型名可直接使用。
+内置默认映射只有一条：`Free → agnes-2.5-flash`（默认直通，走 Agnes 免费通道）。
+
+`scripts/import_opencode_go.py` 另外建 **6 条 `go-*` 短别名**（`--no-aliases` 可跳过）：
+
+| 别名 | 目标 |
+|---|---|
+| `go-glm` | glm-5.3 |
+| `go-glm-flash` | glm-5.3-flash |
+| `go-kimi` | kimi-k2.7-code |
+| `go-deepseek` | deepseek-v4-pro |
+| `go-minimax` | minimax-m3 |
+| `go-qwen` | qwen3.8-max |
+
+历史别名（go-glm-5.1 / go-omen / go-claude-haiku 等）已删除。客户端模型名没有映射
+命中时，代理仍会按上游白名单自动调度，`glm-5.3` 等原始模型名可直接使用。
 
 ## 4. 启用步骤
 
@@ -71,7 +96,7 @@ go-glm-5.1 / go-omen / go-claude-haiku 等）已删除——客户端模型名�
 python scripts/import_opencode_go.py --api-key sk-go-xxx --enable
 
 # 方式二：控制台
-#   上游管理 → 两条 Go 上游分别填 Key → 启用
+#   上游管理 → 三条 Go 上游分别填 Key → 启用
 ```
 
 **默认停用（Key 为空）是有意的**：健康检查每 120s 一次，空 Key 会刷 401 并把节点
@@ -96,8 +121,10 @@ python scripts/import_opencode_go.py --api-key sk-go-xxx --enable
    （`x-opencode-session` / `x-claude-session-id` / `x-session-id`），其次取
    请求 `metadata.user_id`（Claude Code 每会话携带）派生，兜底按客户端身份
    派生，无需维护会话状态。连通性测试用 `ccp-test-<id>` 固定会话。
-3. `/v1/responses` 系列模型（Grok/GPT Luna/Muse）不可用；误配白名单落空时会被
-   派给错误上游（总览 #2）。
+3. `/v1/responses` 系列模型（Grok / GPT Luna / Muse Spark）的连通性未实测——
+   转换器已实现（2026-10-21），但 Go 的 `inference/go/v1` 端点是否要求额外的
+   请求头、是否接受 `Authorization: Bearer` 都还没验证过。
+4. 误配白名单落空时会被派给错误上游（总览 #2）。
 
 ## 7. 官方配额数据（2026-10-13 实测打通）
 

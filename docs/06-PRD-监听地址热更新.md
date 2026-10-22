@@ -1,7 +1,7 @@
 # 06 · PRD · 监听地址热更新（改端口即生效）
 
 > 关联代码：`backend/admin_routes.py`（`POST /api/server/restart`）、
-> `backend/main.py`（`runtime_addr`）、`web/app.js`（saveSettings）、`run.py`
+> `backend/main.py`（`runtime_addr`）、`frontend/src/views/Settings.tsx`（保存设置 + 改地址触发重启）、`run.py`
 
 ## 1. 需求
 
