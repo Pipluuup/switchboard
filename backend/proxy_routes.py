@@ -109,9 +109,22 @@ def body_text(body: dict) -> str:
     return "\n".join(parts)
 
 
-def extract_usage(text: str, protocol: str) -> tuple[int, int]:
-    """从响应（JSON 或 SSE 文本）里尽量提取 (input, output) token。"""
-    tin = tout = 0
+def extract_usage(text: str, protocol: str) -> tuple[int, int, int, int]:
+    """从响应（JSON 或 SSE 文本）里尽量提取 token 用量。
+
+    返回 (input, output, cache_read, cache_write)。
+
+    **input 一律是「不含缓存命中」的部分**——这样三种协议下
+    `input + cache_read + cache_write` 含义统一，聚合表可以直接相加：
+    - Anthropic：`input_tokens` 本来就不含缓存（缓存单独计），原样取
+    - OpenAI Chat / Responses：`prompt_tokens` / `input_tokens` **已含**缓存命中，
+      要减去 `cached_tokens` 才与 Anthropic 对齐
+
+    这个语义差异是真实的（CC-Switch 为此专门存了 input_token_semantics 列：
+    其本机数据里 semantics=1 的全是 codex/Responses，semantics=2 的全是
+    claude/Anthropic），不归一会把缓存命中的量重复计一次。
+    """
+    tin = tout = cread = cwrite = 0
     try:
         if protocol == "anthropic":
             ins = re.findall(r'"input_tokens"\s*:\s*(\d+)', text)
@@ -120,6 +133,13 @@ def extract_usage(text: str, protocol: str) -> tuple[int, int]:
                 tin = int(ins[0])          # message_start 里的才是 input
             if outs:
                 tout = int(outs[-1])       # 最后一次 message_delta 的累计值
+            # 缓存：读命中与写入分开计
+            creads = re.findall(r'"cache_read_input_tokens"\s*:\s*(\d+)', text)
+            if creads:
+                cread = int(creads[-1])
+            cwrites = re.findall(r'"cache_creation_input_tokens"\s*:\s*(\d+)', text)
+            if cwrites:
+                cwrite = int(cwrites[-1])
         elif protocol == "responses":
             # Responses 的 usage 字段名不同：input_tokens / output_tokens
             ins = re.findall(r'"input_tokens"\s*:\s*(\d+)', text)
@@ -128,6 +148,11 @@ def extract_usage(text: str, protocol: str) -> tuple[int, int]:
                 tin = int(ins[-1])
             if outs:
                 tout = int(outs[-1])
+            # input_tokens 已含缓存命中，要减掉
+            cached = re.findall(r'"cached_tokens"\s*:\s*(\d+)', text)
+            if cached:
+                cread = int(cached[-1])
+                tin = max(0, tin - cread)
         else:
             ins = re.findall(r'"prompt_tokens"\s*:\s*(\d+)', text)
             outs = re.findall(r'"completion_tokens"\s*:\s*(\d+)', text)
@@ -135,9 +160,14 @@ def extract_usage(text: str, protocol: str) -> tuple[int, int]:
                 tin = int(ins[-1])
             if outs:
                 tout = int(outs[-1])
+            # prompt_tokens 已含缓存命中，要减掉
+            cached = re.findall(r'"cached_tokens"\s*:\s*(\d+)', text)
+            if cached:
+                cread = int(cached[-1])
+                tin = max(0, tin - cread)
     except Exception:  # noqa: BLE001
         pass
-    return tin, tout
+    return tin, tout, cread, cwrite
 
 
 def resp_text(obj: Any) -> str:
@@ -457,7 +487,10 @@ async def handle_request(request: Request, in_protocol: str):
             except Exception:  # noqa: BLE001
                 pass
             await resp.aclose()
-            pool.report_failure(up, f"HTTP {resp.status_code}: {text[:200]}")
+            # 带上状态码：客户端错误（400/404/422）不该算上游的失败，
+            # 否则上游是好的也会被误熔断。401/403 会立即熔断（Key 失效）。
+            pool.report_failure(up, f"HTTP {resp.status_code}: {text[:200]}",
+                                status_code=resp.status_code)
             last_err = f"{up.name} -> HTTP {resp.status_code}: {text[:300]}"
             last_status = resp.status_code
             if resp.status_code >= 500 or resp.status_code == 429:
@@ -482,7 +515,7 @@ async def handle_request(request: Request, in_protocol: str):
         client_key_val = ck.key if ck else ""
 
         def make_log(captured: str, out_obj: Any = None, up=up, in_tok=in_tokens_est):
-            tin, tout = extract_usage(captured, up.protocol)
+            tin, tout, cread, cwrite = extract_usage(captured, up.protocol)
             if not tin:
                 tin = in_tok
             if not tout:
@@ -495,6 +528,7 @@ async def handle_request(request: Request, in_protocol: str):
                 request_model=model, actual_model=target_model,
                 stream=int(stream), status=200, ok=1,
                 input_tokens=tin, output_tokens=tout,
+                cache_read_tokens=cread, cache_write_tokens=cwrite,
                 latency_ms=int((time.time() - t0) * 1000), error="",
                 request_body=req_capture,
                 response_body=_resp_summary(captured, out_obj, up.protocol, tin, tout),

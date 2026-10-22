@@ -113,6 +113,72 @@ def main() -> int:
           abs((time.time() - wins["5h"]["first_ts"]) - 4 * H) < 120,
           f"实际 {(time.time() - wins['5h']['first_ts']) / H:.2f} 小时前")
 
+    print("\n[6] 日聚合表")
+    db2 = build_db()
+    seed(db2)
+    # 今天的明细进聚合表
+    written = db2.rollup_days()
+    check("rollup_days 有写入", written > 0, f"写入 {written} 行")
+    # 再跑一次不应翻倍（幂等：先删后重算，不是累加）
+    written2 = db2.rollup_days()
+    check("重复执行行数不变（幂等）", written2 == written, f"{written} → {written2}")
+
+    # 「今天」的行数取决于运行时刻（6h 前那条可能落在今天也可能落在昨天），
+    # 所以期望值从明细表现场算，不写死。
+    with db2._lock:
+        row = db2._conn.execute(
+            "SELECT COALESCE(SUM(request_count),0) n, COALESCE(SUM(input_tokens),0) tin "
+            "FROM usage_daily_rollups").fetchone()
+        exp = db2._conn.execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(input_tokens),0) tin FROM request_logs "
+            "WHERE date(ts, 'unixepoch', 'localtime') = date('now', 'localtime')"
+        ).fetchone()
+    check("聚合表的请求数与今天的明细一致",
+          int(row["n"]) == int(exp["n"]), f"实际 {row['n']}，期望 {exp['n']}")
+    check("聚合表的输入 token 与今天明细一致",
+          int(row["tin"]) == int(exp["tin"]), f"实际 {row['tin']}，期望 {exp['tin']}")
+    check("今天至少有一条明细（测试前提成立）", int(exp["n"]) > 0, str(exp["n"]))
+
+    print("\n[7] 长窗口改查聚合表")
+    # retention=7：5h/7d 走明细，30d 走聚合
+    db3 = build_db()
+    seed(db3)
+    db3.rollup_days()
+    w = {x["key"]: x for x in db3.usage_windows(retention_days=7)}
+    check("5h 走明细表", w["5h"]["source"] == "detail", w["5h"]["source"])
+    check("7d 走明细表", w["7d"]["source"] == "detail", w["7d"]["source"])
+    check("30d 走日聚合表", w["30d"]["source"] == "rollup", w["30d"]["source"])
+    # retention=0（永久保留）→ 一律走明细
+    w0 = {x["key"]: x for x in db3.usage_windows(retention_days=0)}
+    check("retention=0 时全部走明细",
+          all(x["source"] == "detail" for x in w0.values()),
+          str({k: v["source"] for k, v in w0.items()}))
+
+    print("\n[8] 聚合表不受保留期影响")
+    db4 = build_db()
+    seed(db4)
+    db4.rollup_days()
+    before = {x["key"]: x for x in db4.usage_windows(retention_days=7)}
+    # 清掉明细（模拟保留期到期清理），只留聚合表
+    db4.clear_all()
+    after = {x["key"]: x for x in db4.usage_windows(retention_days=7)}
+    check("明细清空后 30d 窗口仍有数据（来自聚合表）",
+          after["30d"]["requests"] > 0, f"实际 {after['30d']['requests']}")
+    check("明细清空后 5h 窗口归零（明细表确实空了）",
+          after["5h"]["requests"] == 0, f"实际 {after['5h']['requests']}")
+    check("清理前 30d 有数据", before["30d"]["requests"] > 0,
+          f"实际 {before['30d']['requests']}")
+
+    print("\n[9] 聚合表的模型分组")
+    db5 = build_db()
+    seed(db5)
+    db5.rollup_days()
+    agg = db5.rollup_range(time.time() - 30 * D)
+    models = {m["model"] for m in agg["by_model"]}
+    check("聚合表按实际模型分组", "glm-5.3" in models, str(models))
+    ups5 = {u["upstream_name"] for u in agg["by_upstream"]}
+    check("聚合表按上游分组", len(ups5) >= 1, str(ups5))
+
     ok = sum(1 for _, s, _ in results if s)
     print("\n" + "=" * 56)
     print(f"  用量窗口测试：{ok}/{len(results)} 通过")

@@ -87,7 +87,9 @@ async def messages(request: Request):
             yield sse("message_start", {"type": "message_start", "message": {
                 "id": msg_id, "type": "message", "role": "assistant", "content": [],
                 "model": body.get("model"), "stop_reason": None, "stop_sequence": None,
-                "usage": {"input_tokens": 33, "output_tokens": 1}}})
+                "usage": {"input_tokens": 33, "output_tokens": 1,
+                          "cache_read_input_tokens": 1200,
+                          "cache_creation_input_tokens": 300}}})
             yield sse("ping", {"type": "ping"})
             idx = 0
             if has_tools and RETURN_TOOL:
@@ -123,7 +125,10 @@ async def messages(request: Request):
     return JSONResponse({
         "id": msg_id, "type": "message", "role": "assistant", "model": body.get("model"),
         "content": content, "stop_reason": stop, "stop_sequence": None,
-        "usage": {"input_tokens": 33, "output_tokens": 21},
+        # 带缓存字段：input_tokens 不含缓存，缓存单独计（Anthropic 语义）
+        "usage": {"input_tokens": 33, "output_tokens": 21,
+                  "cache_read_input_tokens": 1200,
+                  "cache_creation_input_tokens": 300},
     })
 
 

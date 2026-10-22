@@ -270,6 +270,14 @@ async def main():
         check("统计接口有数据", ov["stats"]["total_requests"] > 0, str(ov["stats"]["total_requests"]))
         check("按上游聚合有数据", len(ov["stats"]["by_upstream"]) > 0)
 
+        # 缓存 token：Anthropic 协议的模拟上游会返回 cache_read/cache_creation。
+        # 断言它们真的落到了日志里（之前 extract_usage 完全丢弃这两个字段）。
+        usage = (await c.get(f"{BASE}/api/usage")).json()
+        cread = sum(w.get("cache_read_tokens", 0) for w in usage["windows"])
+        cwrite = sum(w.get("cache_write_tokens", 0) for w in usage["windows"])
+        check("缓存命中 token 已落库", cread > 0, f"cache_read={cread}")
+        check("缓存写入 token 已落库", cwrite > 0, f"cache_write={cwrite}")
+
         # ---------------------------------------------------- 13. 限流
         print("\n[13] 限流")
         limited = (await c.post(f"{BASE}/api/keys", json={
