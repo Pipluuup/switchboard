@@ -42,6 +42,11 @@ jobs:
       - name: Client setup tests
         run: python tests/test_client_setup.py
 
+      # 熔断器状态机：连续失败 / 错误率 / 半开恢复 / 错误分类。
+      # 纯内存对象，不需要启动服务。
+      - name: Circuit breaker tests
+        run: python tests/test_circuit.py
+
       # 前端 ↔ 后端契约：API 路径 / 协议枚举 / 视图对齐。
       # 纯静态检查（读源码比对），不需要 Node。
       - name: Frontend contract tests

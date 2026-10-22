@@ -40,9 +40,60 @@ GET /api/usage  →
 }
 ```
 
+## 3.1 数据源：明细 + 日聚合双源（2026-10-22 新增）
+
+`request_logs` 明细表受 `log_retention_days` 清理（默认 7 天），
+直接查它算 30 天窗口只能看到 7 天的数据——这就是已知问题 #5。
+
+新增旁路表 `usage_daily_rollups`，把明细按「天 × 上游 × 实际模型」压成一行：
+
+| 字段 | 说明 |
+|---|---|
+| `date` | `YYYY-MM-DD`（本地时区） |
+| `upstream_id` / `upstream_name` | 上游 |
+| `actual_model` | 映射后的实际模型（消耗额度的是它） |
+| `request_model` | 客户端请求的模型——**与实际模型分开存**，才看得见「客户端要 claude-opus、实际烧的是 glm-5.3」这种转换关系 |
+| `request_count` / `success_count` | 请求数 / 成功数 |
+| `input_tokens` / `output_tokens` | |
+| `cache_read_tokens` / `cache_write_tokens` | 缓存命中 / 写入 |
+| `avg_latency_ms` | |
+
+**写入时机**：在 `main.py` 的健康检查循环里，`rollup_days()` 必须在
+`cleanup()` **之前**调用——明细一旦被删，那部分数据就永远进不了聚合表。
+
+**用「按日期删除后重算」而不是 UPSERT 累加**：累加在重跑时会双计，重算是幂等的。
+
+**窗口按长度选数据源**：
+
+- 窗口 ≤ 保留期 → 查明细（精度高，有精确延迟）
+- 窗口 > 保留期 → 查聚合表（不受保留期影响）
+
+`usage_windows()` 的返回值带 `source` 字段（`rollup` / `detail`）标明用了哪个。
+
+## 3.2 缓存 token 的口径
+
+三种协议的 usage 语义**不一致**：
+
+| 协议 | 缓存读 | 缓存写 | `input_tokens` 是否含缓存 |
+|---|---|---|---|
+| anthropic | `cache_read_input_tokens` | `cache_creation_input_tokens` | **不含** |
+| responses | `input_tokens_details.cached_tokens` | — | **含** |
+| openai (chat) | `prompt_tokens_details.cached_tokens` | — | **含** |
+
+落库时统一成 **`input_tokens` 不含缓存**（OpenAI 协议要减掉 `cached_tokens`），
+这样 `input + cache_read + cache_write` 在三种协议下含义统一，聚合表可以直接相加。
+
+> 这个差异是真实的——CC-Switch 为此专门存了 `input_token_semantics` 列，
+> 其本机数据里 semantics=1 的全是 codex（Responses）、semantics=2 的全是
+> claude（Anthropic）。
+
+`total_tokens` 仍是 `input + output`（**不含缓存**）：缓存单独展示，
+混进总量会让「缓存一开总量暴涨」误导。
+
 ## 4. 前端行为（frontend/src/views/Usage.tsx）
 
 - 用量页三个窗口各一张卡片（颜色 5h=accent / 7d=purple / 30d=cyan）；
+- 卡片右上角显示「缓存命中 N」，表格有独立的「缓存命中」列；
 - 窗口对比表 + 按所选窗口的模型份额条形图；
 - **`7 < retention_days < 30` 时显示黄色警示**：日志保留期会截断 30d 窗口；
 - 无需手动刷新策略：切换视图时重新拉取；
@@ -54,11 +105,13 @@ GET /api/usage  →
 
 | 问题 | 现状 | 方向 |
 |---|---|---|
-| 日志保留期截断长窗口 | `log_retention_days=7` 时 30d 窗口只剩 7 天数据，前端已警示 | ① 文档引导设 0/≥30；② 新增小时级聚合表，窗口从聚合表算（总览路线 #4） |
+| ~~日志保留期截断长窗口~~ | ✅ 已解决（2026-10-22）：30d 窗口改查日聚合表 | — |
 | 窗口实时全表扫描 | `ts >= ?` 索引可用，日志量大时仍需观察 | 数据量 > 百万行时引入聚合表 |
 | 没有按客户端 Key 的维度 | 全局统计 | by_key 聚合列，服务"谁在烧量"场景 |
 
 ## 6. 验证基准
 
-`tests/test_usage.py` 22 条（临时 SQLite）：窗口边界（6h 前不进 5h 窗、40d 前三窗皆无）、
-Token 求和、成功率、按上游分组、**模型名必须是 actual_model**。改统计口径先跑它。
+`tests/test_usage.py` 36 条（临时 SQLite）：窗口边界（6h 前不进 5h 窗、40d 前三窗皆无）、
+Token 求和、成功率、按上游分组、**模型名必须是 actual_model**，
+以及日聚合表（幂等重算、与明细一致、长窗口切数据源、聚合表不受保留期影响）。
+改统计口径先跑它。
