@@ -159,6 +159,7 @@ function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues
               { value: 'anthropic', label: 'Anthropic（/v1/messages）' },
               { value: 'openai', label: 'OpenAI（/v1/chat/completions）' },
               { value: 'responses', label: 'OpenAI Responses（/v1/responses）' },
+              { value: 'gemini', label: 'Gemini 原生（/v1beta/models/...:generateContent）' },
             ]}
           />
         </Form.Item>
@@ -277,6 +278,13 @@ function UpstreamForm({ form, initial }: { form: FormInstance<UpstreamFormValues
 }
 
 function statusTag(u: Upstream) {
+  // 熔断三态优先展示：它比「冷却中」更能说明上游被拉黑的真实原因
+  if (u.circuit_state === 'open') {
+    const left = u.circuit_remaining ?? 0
+    if (left <= 0) return <Tag color="orange">待试探</Tag>
+    return <Tag color="red">熔断中（{left}s 后试探）</Tag>
+  }
+  if (u.circuit_state === 'half_open') return <Tag color="orange">试探中</Tag>
   if (u.in_cooldown) return <Tag color="red">冷却中</Tag>
   return u.healthy ? <Tag color="green">正常</Tag> : <Tag color="gold">异常</Tag>
 }

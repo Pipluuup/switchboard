@@ -13,6 +13,12 @@ type Draft = {
   request_timeout: number
   failure_threshold: number
   cooldown_seconds: number
+  circuit_enabled: boolean
+  circuit_error_rate_threshold: number
+  circuit_min_requests: number
+  circuit_open_seconds: number
+  circuit_half_open_success: number
+  circuit_window_seconds: number
   health_check_interval: number
   log_retention_days: number
   health_check_enabled: boolean
@@ -43,6 +49,12 @@ export default function SettingsView() {
           request_timeout: s.request_timeout,
           failure_threshold: s.failure_threshold,
           cooldown_seconds: s.cooldown_seconds,
+          circuit_enabled: s.circuit_enabled !== false,
+          circuit_error_rate_threshold: s.circuit_error_rate_threshold ?? 0.5,
+          circuit_min_requests: s.circuit_min_requests ?? 10,
+          circuit_open_seconds: s.circuit_open_seconds ?? 60,
+          circuit_half_open_success: s.circuit_half_open_success ?? 2,
+          circuit_window_seconds: s.circuit_window_seconds ?? 120,
           health_check_interval: s.health_check_interval,
           log_retention_days: s.log_retention_days,
           health_check_enabled: !!s.health_check_enabled,
@@ -92,6 +104,12 @@ export default function SettingsView() {
         request_timeout: Number(draft.request_timeout) || 180,
         failure_threshold: Number(draft.failure_threshold) || 3,
         cooldown_seconds: Number(draft.cooldown_seconds) || 60,
+        circuit_enabled: draft.circuit_enabled,
+        circuit_error_rate_threshold: Number(draft.circuit_error_rate_threshold) || 0.5,
+        circuit_min_requests: Number(draft.circuit_min_requests) || 10,
+        circuit_open_seconds: Number(draft.circuit_open_seconds) || 60,
+        circuit_half_open_success: Number(draft.circuit_half_open_success) || 2,
+        circuit_window_seconds: Number(draft.circuit_window_seconds) || 120,
         health_check_interval: Number(draft.health_check_interval) || 120,
         log_retention_days: Number(draft.log_retention_days) || 0,
         health_check_enabled: draft.health_check_enabled,
@@ -171,6 +189,16 @@ export default function SettingsView() {
               <label style={{ fontSize: 12.5, color: '#93a0b8' }}>冷却时间（秒）{num('cooldown_seconds')}</label>
               <label style={{ fontSize: 12.5, color: '#93a0b8' }}>健康检查间隔（秒）{num('health_check_interval')}</label>
               {check('health_check_enabled', '启用后台健康检查')}
+              {check('circuit_enabled', '启用熔断器（上游异常时自动拉黑，避免每个请求都去撞一次）')}
+              {draft.circuit_enabled && (
+                <>
+                  <label style={{ fontSize: 12.5, color: '#93a0b8' }}>错误率阈值（0~1，窗口内失败占比超它就熔断）{num('circuit_error_rate_threshold')}</label>
+                  <label style={{ fontSize: 12.5, color: '#93a0b8' }}>最小样本数（样本不足时不按错误率判定）{num('circuit_min_requests')}</label>
+                  <label style={{ fontSize: 12.5, color: '#93a0b8' }}>熔断持续（秒，到期进入试探期）{num('circuit_open_seconds')}</label>
+                  <label style={{ fontSize: 12.5, color: '#93a0b8' }}>试探期需连续成功几次才恢复{num('circuit_half_open_success')}</label>
+                  <label style={{ fontSize: 12.5, color: '#93a0b8' }}>错误率统计窗口（秒）{num('circuit_window_seconds')}</label>
+                </>
+              )}
             </Space>
           </Card>
         </Col>

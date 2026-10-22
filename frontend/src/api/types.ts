@@ -37,9 +37,15 @@ export interface UsageWindow {
   input_tokens: number
   output_tokens: number
   total_tokens: number
+  /** 缓存命中 token（input 不含这部分） */
+  cache_read_tokens?: number
+  /** 缓存写入 token */
+  cache_write_tokens?: number
   avg_latency_ms: number
   last_ts: number | null
   by_model: { model: string; n: number; tin: number; tout: number }[]
+  /** 数据来源：rollup=日聚合表 / detail=明细表 */
+  source?: 'rollup' | 'detail'
 }
 
 export interface Usage {
@@ -48,7 +54,7 @@ export interface Usage {
 }
 
 /** 上游协议：与后端 backend/config.py 的 Protocol 字面量保持一致 */
-export type UpstreamProtocol = 'anthropic' | 'openai' | 'responses'
+export type UpstreamProtocol = 'anthropic' | 'openai' | 'responses' | 'gemini'
 
 export interface Upstream {
   id: string
@@ -70,6 +76,12 @@ export interface Upstream {
   failed_requests: number
   last_latency_ms: number | null
   last_error: string
+  /** 熔断器状态：closed=正常 / open=已拉黑 / half_open=冷却到期后的试探期 */
+  circuit_state?: 'closed' | 'open' | 'half_open'
+  /** 熔断还要多久进入半开（秒） */
+  circuit_remaining?: number
+  /** 熔断已到期、下一个请求可以试探（但还没试探过） */
+  circuit_probe_ready?: boolean
 }
 
 export interface UpstreamInput {
@@ -194,6 +206,18 @@ export interface Settings {
   request_timeout: number
   failure_threshold: number
   cooldown_seconds: number
+  /** 熔断器开关 */
+  circuit_enabled?: boolean
+  /** 窗口内错误率超此值就熔断（0~1） */
+  circuit_error_rate_threshold?: number
+  /** 最小样本数：样本不足时不按错误率判定 */
+  circuit_min_requests?: number
+  /** 熔断持续秒数，到期进入半开试探 */
+  circuit_open_seconds?: number
+  /** 试探期需连续成功几次才恢复 */
+  circuit_half_open_success?: number
+  /** 错误率统计窗口（秒） */
+  circuit_window_seconds?: number
   health_check_interval: number
   log_retention_days: number
   health_check_enabled: boolean

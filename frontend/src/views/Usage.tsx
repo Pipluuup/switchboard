@@ -72,6 +72,7 @@ export default function Usage() {
               label={`${w.label} Tokens`}
               value={fmtNum(w.total_tokens)}
               foot={`输入 ${fmtNum(w.input_tokens)} · 输出 ${fmtNum(w.output_tokens)} · ${fmtNum(w.requests)} 次请求 · 成功率 ${rate}`}
+              extra={w.cache_read_tokens ? `缓存命中 ${fmtNum(w.cache_read_tokens)}` : undefined}
             />
           )
         })}
@@ -98,6 +99,15 @@ export default function Usage() {
             { title: '成功率', dataIndex: 'success_rate', render: (_: unknown, w: UsageWindow) => rateTag(w) },
             { title: '输入 Tokens', dataIndex: 'input_tokens', render: (v: number) => fmtNum(v) },
             { title: '输出 Tokens', dataIndex: 'output_tokens', render: (v: number) => fmtNum(v) },
+            {
+              title: '缓存命中',
+              render: (_: unknown, w: UsageWindow) =>
+                w.cache_read_tokens ? (
+                  <span style={{ color: '#7fb3ff' }}>{fmtNum(w.cache_read_tokens)}</span>
+                ) : (
+                  <span style={{ color: '#5c6880' }}>-</span>
+                ),
+            },
             { title: '合计 Tokens', dataIndex: 'total_tokens', render: (v: number) => <b>{fmtNum(v)}</b> },
             { title: '平均延迟', render: (_: unknown, w: UsageWindow) => (w.requests ? (w.avg_latency_ms || 0) + ' ms' : '-') },
             { title: '最近一次', render: (_: unknown, w: UsageWindow) => <span style={{ fontSize: 11.5, color: '#93a0b8' }}>{fmtAgo(w.last_ts)}</span> },
