@@ -56,6 +56,14 @@ class Upstream(BaseModel):
     total_requests: int = 0
     failed_requests: int = 0
 
+    # ---- 熔断器状态（同样不持久化） ----
+    # closed：正常放行 / open：已拉黑 / half_open：冷却到期后的试探期
+    circuit_state: str = "closed"
+    circuit_opened_at: float = 0.0
+    circuit_half_open_success: int = 0
+    # 错误率统计窗口内的时间戳列表（True=失败 False=成功）
+    circuit_events: list[tuple[float, bool]] = Field(default_factory=list)
+
     def runtime_state(self) -> dict[str, Any]:
         return {
             "healthy": self.healthy,
@@ -66,7 +74,28 @@ class Upstream(BaseModel):
             "last_latency_ms": self.last_latency_ms,
             "total_requests": self.total_requests,
             "failed_requests": self.failed_requests,
+            "circuit_state": self.circuit_state,
+            "circuit_remaining": self.circuit_remaining(),
+            "circuit_probe_ready": self.circuit_probe_ready(),
         }
+
+    def circuit_remaining(self) -> int:
+        """熔断还要多久才进入半开（秒）。非 open 状态返回 0。
+
+        冷却已到期但还没人发起试探时返回 0——此时熔断**已可被试探**，
+        只是还没有请求去触发（状态转换发生在 candidates() 筛选时）。
+
+        `store` 是本模块的全局变量，方法体在调用时才求值——
+        那时模块早已加载完毕，不会踩到循环导入。
+        """
+        if self.circuit_state != "open":
+            return 0
+        secs = store.config.settings.circuit_open_seconds
+        return max(0, int(self.circuit_opened_at + secs - time.time()))
+
+    def circuit_probe_ready(self) -> bool:
+        """熔断已到期、下一个请求可以试探（但还没试探过）。"""
+        return self.circuit_state == "open" and self.circuit_remaining() <= 0
 
 
 class ModelMapping(BaseModel):
@@ -114,6 +143,22 @@ class Settings(BaseModel):
     failure_threshold: int = 3
     health_check_interval: int = 120
     health_check_enabled: bool = True
+    # ---- 熔断器 ----
+    # 熔断 = 上游异常时把它拉黑一段时间，而不是让每个请求都去撞一次。
+    # 连续失败达 failure_threshold 会打开；此外窗口内错误率超阈值也会打开
+    # （治「时好时坏」的上游：连续计数会被一次成功清零，永远打不中阈值）。
+    circuit_enabled: bool = True
+    # 错误率阈值（0~1）：窗口内失败占比超过它就打开熔断
+    circuit_error_rate_threshold: float = 0.5
+    # 最小样本数：窗口内样本不足这个量时**不**用错误率判定
+    # （刚启动的节点 3 次全失败错误率 100%，但毫无统计意义）
+    circuit_min_requests: int = 10
+    # 熔断打开后多久进入半开（秒）
+    circuit_open_seconds: int = 60
+    # 半开期连续成功多少次才完全关闭熔断
+    circuit_half_open_success: int = 2
+    # 错误率统计窗口（秒）
+    circuit_window_seconds: int = 120
     auto_open_browser: bool = True
     use_system_proxy: bool = True  # 请求上游时是否尊重 HTTP(S)_PROXY 环境变量
     # OpenCode Console（https://opencode.ai/console）凭证：用于拉取 Go 配额官方数据。
@@ -163,7 +208,11 @@ class ClientProfile(BaseModel):
     name: str = "新档位"
     client: str = "claude"        # claude / codex / gemini
     client_key_id: str = ""       # 用哪个客户端 Key
-    model: str = ""               # 映射到网关的哪个模型（写进客户端的模型配置）
+    model: str = ""               # 默认模型（写进主模型与所有未单独配置的档位）
+    # 档位差异化映射（Claude Code 专属）：按 SONNET/HAIKU/OPUS/FABLE 档位
+    # 各写不同的网关模型别名。键用小写档位名（非法值忽略），
+    # 未配置的档位回落到 model。主模型 ANTHROPIC_MODEL 始终用 model。
+    tier_models: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -275,6 +324,8 @@ class ConfigStore:
                 "upstreams": {"__all__": {
                     "healthy", "consecutive_failures", "cooldown_until", "last_error",
                     "last_latency_ms", "total_requests", "failed_requests",
+                    "circuit_state", "circuit_opened_at", "circuit_half_open_success",
+                    "circuit_events",
                 }},
             })
             tmp = self.path + ".tmp"
@@ -312,6 +363,8 @@ class ConfigStore:
                 if k in Upstream.model_fields and k not in {
                     "healthy", "consecutive_failures", "cooldown_until",
                     "last_error", "last_latency_ms", "total_requests", "failed_requests",
+                    "circuit_state", "circuit_opened_at", "circuit_half_open_success",
+                    "circuit_events",
                 }:
                     setattr(up, k, v)
             self.save()

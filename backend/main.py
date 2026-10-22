@@ -38,6 +38,9 @@ async def _health_loop():
                     if up.enabled:
                         await pool.health_check(up)
             if st.log_retention_days > 0:
+                # 顺序要紧：先聚合再清理。明细一旦被删，那部分数据就永远
+                # 进不了日聚合表，30 天窗口会缺一段。
+                db.rollup_days()
                 db.cleanup(st.log_retention_days)
         except Exception:  # noqa: BLE001
             pass

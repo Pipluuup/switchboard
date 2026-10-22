@@ -32,6 +32,8 @@ async def require_admin(request: Request, x_admin_token: str = Header(default=""
 
 def _merged_upstream(u: Upstream) -> dict[str, Any]:
     d = u.model_dump()
+    # circuit_events 是熔断器的内部滑动窗口，会一直增长，不该出接口
+    d.pop("circuit_events", None)
     d.update(u.runtime_state())
     d["api_key_masked"] = (u.api_key[:8] + "*" * 6 + u.api_key[-4:]) if len(u.api_key) > 16 else u.api_key
     return d
@@ -63,10 +65,12 @@ async def usage(_=Depends(require_admin)):
     """滚动窗口用量：5 小时 / 7 天 / 30 天。
 
     `retention_days` 一并返回，因为日志会被定期清理——当保留天数小于窗口
-    长度时，窗口数据是残缺的，前端需要据此提示用户。
+    长度时，窗口数据从日聚合表取（不受保留期影响），但明细级字段
+    （精确延迟等）就没有了。
     """
     return {
-        "windows": db.usage_windows(),
+        "windows": db.usage_windows(
+            retention_days=store.config.settings.log_retention_days),
         "retention_days": store.config.settings.log_retention_days,
         "generated_at": time.time(),
     }
