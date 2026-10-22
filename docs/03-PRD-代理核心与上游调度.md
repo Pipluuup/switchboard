@@ -97,8 +97,7 @@
 
 ## 5. E2E 测试规约
 
-`tests/test_e2e.py` 开头的清场会**删光目标实例的全部上游/映射/Key**，且 `BASE`
-硬编码 `8000`。跑法必须是隔离实例：
+`tests/test_e2e.py` 开头的清场会**删光目标实例的全部上游/映射/Key**。跑法必须是隔离实例：
 
 ```
 set SWITCHBOARD_DATA_DIR=<临时目录>  &&  python run.py --no-browser --port 8010
@@ -106,3 +105,7 @@ set SWITCHBOARD_DATA_DIR=<临时目录>  &&  python run.py --no-browser --port 8
 ```
 
 正式配置零接触。`tests/mock_upstream.py` 在独立端口（如 8100）提供假上游。
+
+两个 e2e 脚本的地址都支持环境变量覆盖，不用再改源码里的硬编码：
+`SWITCHBOARD_BASE`（主服务）、`SWITCHBOARD_MOCK`（假上游）。
+CI 里 `test_e2e.py` 跑 8000 + 8100，`e2e_voice.py` 跑 8124 + 8110，互不干扰。
