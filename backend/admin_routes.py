@@ -492,7 +492,11 @@ async def import_config(payload: dict[str, Any], _=Depends(require_admin)):
     store.config.mappings = maps
     store.config.client_keys = keys
     if payload.get("settings"):
-        for k, v in payload["settings"].items():
+        # 旧配置里的布尔 voice_enabled 要迁移成三态 voice_mode，
+        # 否则导入后设置被静默丢弃（voice_enabled 已不在 model_fields 里）
+        imported = dict(payload["settings"])
+        store._migrate_settings(imported)
+        for k, v in imported.items():
             if k in Settings.model_fields and k not in ("host", "port"):
                 setattr(store.config.settings, k, v)
     store.save()
