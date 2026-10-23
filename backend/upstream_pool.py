@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import contextlib
 import time
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import httpx
 
-from .config import Upstream, store
+from .config import ChainHop, Upstream, store
 from .database import db
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "[::1]"}
@@ -27,6 +27,19 @@ def _is_loopback(url: str) -> bool:
     勾选「代理局域网/本地」的代理软件劫持，导致间歇 404/502。"""
     host = urlparse(url).hostname or ""
     return host in _LOOPBACK_HOSTS
+
+
+class ChainEntry(NamedTuple):
+    """故障转移链展开后的一个条目。
+
+    `skipped` 非空表示这一档没被尝试（停用/冷却/熔断/上游不存在），
+    原因写在这里，用于在请求日志里说明「为什么没走这一档」。
+    """
+
+    upstream: Upstream | None
+    target: str          # 该档发给上游的模型名
+    hop: int             # 第几档（0 起）
+    skipped: str = ""
 
 
 class UpstreamPool:
@@ -80,7 +93,14 @@ class UpstreamPool:
         return self.get_client(Upstream(base_url="http://example.com"))
 
     # ---------------- 选择 ----------------
-    def candidates(self, model: str = "", upstream_id: str = "") -> list[Upstream]:
+    def candidates(self, model: str = "", upstream_id: str = "",
+                   readonly: bool = False) -> list[Upstream]:
+        """按调度规则挑出当前可用的上游。
+
+        `readonly=True` 时只看不动：不把 open 转成 half_open，
+        也不占用半开试探名额。规划故障转移链时必须用只读模式，
+        否则还没发请求就把上游标成半开、还把名额白占了。
+        """
         ups = store.list_upstreams()
         if upstream_id:
             ups = [u for u in ups if u.id == upstream_id]
@@ -91,7 +111,10 @@ class UpstreamPool:
         now = time.time()
         ups = [u for u in ups if u.enabled and u.cooldown_until <= now]
         # 熔断中的上游直接排除；冷却到期的转半开，且只放行一个试探请求
-        ups = [u for u in ups if self._circuit_admits(u, now)]
+        if readonly:
+            ups = [u for u in ups if self._circuit_admits_readonly(u, now)]
+        else:
+            ups = [u for u in ups if self._circuit_admits(u, now)]
         ups.sort(key=lambda u: (u.priority, -u.weight))
         return ups
 
@@ -116,6 +139,82 @@ class UpstreamPool:
     def pick(self, model: str = "", upstream_id: str = "") -> Upstream | None:
         ups = self.candidates(model, upstream_id)
         return ups[0] if ups else None
+
+    # ---------------- 故障转移链 ----------------
+    def plan_chain(self, hops: list[ChainHop],
+                   fallback_model: str = "") -> list[ChainEntry]:
+        """把故障转移链展开成有序的尝试列表。
+
+        每一档的展开规则：
+        - **固定了上游** → 就是那一档（可能被停用/冷却/熔断，标记跳过）。
+        - **没固定上游** → 展开成多个候选（按调度策略排序），最多取
+          `max_retries + 1` 个。这与老逻辑一致：自动调度时本来就会
+          依次尝试多个上游，老实现靠 `candidates()[:max_nodes]` 实现。
+
+        展开是**只读**的：不改熔断状态、不消耗半开试探名额。
+        半开试探的名额只在真正发请求时通过 `_circuit_admits()` 占用。
+
+        同一上游在链上重复出现时，后面的档会跳过它——已经试过的坏节点
+        再试一遍只是白等一个超时。
+        """
+        by_id = {u.id: u for u in store.list_upstreams()}
+        out: list[ChainEntry] = []
+        attempted: set[str] = set()
+
+        for i, hop in enumerate(hops):
+            target = hop.target or fallback_model
+            if hop.upstream_id:
+                up = by_id.get(hop.upstream_id)
+                if up is None:
+                    out.append(ChainEntry(None, target, i, "上游不存在"))
+                    continue
+                if not up.enabled:
+                    out.append(ChainEntry(up, target, i, "上游已停用"))
+                    continue
+                now = time.time()
+                if up.cooldown_until > now:
+                    out.append(ChainEntry(up, target, i, "冷却中"))
+                    continue
+                if not self._circuit_admits_readonly(up, now):
+                    out.append(ChainEntry(up, target, i, "熔断中"))
+                    continue
+                attempted.add(up.id)
+                out.append(ChainEntry(up, target, i))
+                continue
+
+            # 自动调度：展开成多个候选（只读，不占半开试探名额）
+            cands = self.candidates(target, readonly=True)
+            if not cands:
+                out.append(ChainEntry(None, target, i, "无可用上游"))
+                continue
+            limit = max(1, cands[0].max_retries + 1)
+            picked = 0
+            for cand in cands:
+                if picked >= limit:
+                    break
+                if cand.id in attempted:
+                    continue
+                attempted.add(cand.id)
+                out.append(ChainEntry(cand, target, i))
+                picked += 1
+            if picked == 0:
+                out.append(ChainEntry(None, target, i, "无可用上游"))
+
+        return out
+
+    def _circuit_admits_readonly(self, up: Upstream, now: float) -> bool:
+        """熔断器是否放行该上游——**不修改状态**。
+
+        与 `_circuit_admits` 的区别：后者在冷却到期时会把状态改成
+        half_open 并占用一个试探名额。规划链只是「看一眼」，
+        真正的状态转换必须发生在真正发请求时，否则还没试就
+        把上游标成半开、还把名额白占了。
+        """
+        if not store.config.settings.circuit_enabled:
+            return True
+        if up.circuit_state == "open":
+            return now >= up.circuit_opened_at + store.config.settings.circuit_open_seconds
+        return True
 
     # ---------------- 结果反馈 ----------------
     def report_success(self, up: Upstream, latency_ms: int) -> None:

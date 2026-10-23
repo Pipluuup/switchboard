@@ -47,6 +47,11 @@ jobs:
       - name: Circuit breaker tests
         run: python tests/test_circuit.py
 
+      # 故障转移链：链的展开 / 跳过规则 / 切换条件 / 只读规划 / 老配置兼容。
+      # 纯内存对象，不需要启动服务。
+      - name: Failover chain tests
+        run: python tests/test_failover_chain.py
+
       # 前端 ↔ 后端契约：API 路径 / 协议枚举 / 视图对齐。
       # 纯静态检查（读源码比对），不需要 Node。
       - name: Frontend contract tests
@@ -77,6 +82,18 @@ jobs:
           done
           SWITCHBOARD_BASE=http://127.0.0.1:8124 SWITCHBOARD_MOCK=http://127.0.0.1:8110/v1 \
             python tests/e2e_voice.py
+
+      # 故障转移链：独立实例（8130）+ 独立数据目录 + 独立 mock 端口（8115）。
+      - name: E2E failover tests
+        run: |
+          SWITCHBOARD_DATA_DIR=/tmp/switchboard-ci-failover python run.py --no-browser --port 8130 &
+          python tests/mock_failover_upstream.py --port 8115 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8130/healthz && break
+            sleep 1
+          done
+          SWITCHBOARD_BASE=http://127.0.0.1:8130 SWITCHBOARD_MOCK=http://127.0.0.1:8115/v1 \
+            python tests/e2e_failover.py
 
   frontend:
     runs-on: ubuntu-latest

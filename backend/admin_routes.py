@@ -207,6 +207,11 @@ async def list_mappings(_=Depends(require_admin)):
     for m in store.list_mappings():
         d = m.model_dump()
         d["upstream_name"] = ups.get(m.upstream_id, "")
+        # 链上每一档补上上游名，前端直接显示，不用再查一次
+        d["chain"] = [
+            {**h, "upstream_name": ups.get(h.get("upstream_id", ""), "")}
+            for h in (d.get("chain") or [])
+        ]
         out.append(d)
     return out
 

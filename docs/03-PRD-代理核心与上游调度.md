@@ -3,7 +3,55 @@
 > 关联代码：`backend/converter.py`、`backend/responses_converter.py`、
 > `backend/upstream_pool.py`、`backend/proxy_routes.py`
 
-## 1. 协议转换（converter.py + responses_converter.py）
+## 1. 故障转移链（2026-10-23 新增）
+
+### 目标
+
+映射不再只是「别名 → 单一（上游, 模型）」，而是一张**从上到下依次尝试的链**：
+每档 `ChainHop { upstream_id, target }` 各自带上游与模型。
+专治两件老调度管不了的事：
+
+1. 同一上游上的模型下线/限流（单模型失败，上游整体是好的）；
+2. 想固定走 A 上游、失败后落到 B 上游的明确偏好（公共调度只按 priority，表达不了）。
+
+### 数据与解析（config.py）
+
+- `ModelMapping.chain: list[ChainHop]`；`hops()` 负责三重退化：
+  - 链为空 → 用 `target` + `upstream_id` 造一档（**老配置零迁移**）；
+  - 链里全是空档（既没上游也没模型）→ 同样退回老字段；
+  - 链非空 → 完全以链为准，`target`/`upstream_id` 只作元数据保留。
+- 无映射命中的请求 → 单档「自动调度 + 原样模型名」，沿用公共调度。
+- 档位语义：`upstream_id` 留空 = 该档自动调度；`target` 留空 =
+  该档沿用请求的原始模型名（pass-through）——`plan_chain` 里写为
+  `target = hop.target or fallback_model`。
+
+### 展开与切换（upstream_pool.py `plan_chain()`）
+
+- 每档展开为候选：固定上游 1 个；自动调度档展开为 `max_retries + 1` 个
+  调度候选；已试过的上游不重复（`attempted set`）。
+- 固定上游在本机配置里不存在 → 不尝试，直接记 `ChainEntry(None, target, i, "上游不存在")` 进轨迹。
+- **切换触发**：`status >= 500 或 status ∈ {429, 404}`。
+  400/401/403 是请求本身的错，不切（401 立即熔断，404 反而不熔断——见错误分类表）。
+- 规划用只读路径（`candidates(readonly=True)`）：**规划绝不翻转熔断状态**，
+  不消耗半开试探名额。
+
+### 日志与可观测性
+
+- 每条请求日志带 `failover_trail`（JSON 字符串）：
+  `[{hop, upstream, model, status, result}]`，一请求一日志，切换历史全在 trail 里。
+  - `status: 0` = 没发出去（跳过 / 网络异常）；
+  - 末尾追加最终成功行的 `result` = "成功"。
+- 该字段同时在 `GET /api/logs` 列表与详情响应里（`_LIST_COLS`）。
+- 前端：映射页表格并列为单列「故障转移链」逐档展示；日志页加「切换」列
+  （切换 N 次橙色 tag）与详情弹窗「切换轨迹」区。
+
+### 验证基准
+
+- `tests/test_failover_chain.py` 40 条：链展开 / 跳过规则 / 切换条件 / 只读规划 / 老配置兼容。
+- `tests/e2e_failover.py`（隔离实例 8130 + mock 8115）：真实 HTTP 路径上
+  500/429/404 切档、400/401 不切、整链失败、流式切换、轨迹落日志。
+
+## 2. 协议转换（converter.py + responses_converter.py）
 
 ### 目标
 
@@ -49,7 +97,7 @@
 
 两个套件合起来是转换行为的**唯一权威描述**——改转换器先读它们，改完必须全绿。
 
-## 2. 上游调度（upstream_pool.py）
+## 3. 上游调度（upstream_pool.py）
 
 ### 选路规则（`candidates()`）
 
@@ -131,6 +179,20 @@
 > 旧实现对**所有** 4xx 都记一次失败——客户端连发 3 个格式错误的请求，
 > 就能把一个完全健康的上游误熔断。
 
+**实测案例（2026-10-23，SenseNova 免费网关）**：`glm-5.2` / `kimi-k3` 稳定 200，
+`deepseek-*` 频繁 429 `inference exceeds tpm/rpm limit`（免费档端点级限流）。
+这验证了 429 计入熔断的正确性：不拉黑的话每个请求都要白等一次注定 429 的响应；
+60s 冷却 + 半开试探则让恢复的节点自动重新上岗。（详见该上游备注。）
+
+### 前端交互坑（映射编辑器）
+
+**`Space.Compact` + `Form.Item noStyle` 组合下，AutoComplete 一旦有值，
+宽度会被压塌到 24px**（rc-select 单选模式的宽度计算 bug，新增空值时看不出问题、
+编辑已有映射才暴露）。修法：放弃 `Space.Compact`，改普通 flex 行——
+Select 固定 42% + `flexShrink: 0`，AutoComplete `flex: 1; minWidth: 0`。
+映射编辑器固定展示 3 档（老式单档编辑时自动补空位），全空档在 `submit()` 里剔除，
+不污染后端链数据。
+
 ### 健康检查
 
 `main.py` 的 lifespan 起后台循环：每 `health_check_interval` 秒（默认 120s）对
@@ -141,7 +203,7 @@
 `/models` 探活成功不代表真实请求成功——限流中的上游 `/models` 往往正常返回。
 若这里调 `report_success`，熔断器会被「探活成功」误判为已恢复。
 
-## 3. 代理入口（proxy_routes.py)
+## 4. 代理入口（proxy_routes.py)
 
 - `POST /v1/messages`（Anthropic 风格）、`POST /v1/chat/completions`（OpenAI Chat 风格）、
   `POST /v1/responses`（OpenAI Responses 风格），另有 `POST /v1/messages/count_tokens`
@@ -153,7 +215,7 @@
   链路见 [02](02-架构与技术决策.md)；
 - 客户端断开/超时需保证上游连接被关闭，不悬挂。
 
-## 4. 已知限制（对应总览 #2/#4/#5）
+## 5. 已知限制（对应总览 #2/#4/#5）
 
 1. **请求头不透传**：`endpoint()` 自建请求头，客户端 UA、自定义头都到不了上游。
    改造方向：`Upstream` 增加 `custom_headers` 字段，`endpoint()` 与 `pool.call()`
@@ -165,7 +227,7 @@
 3. ~~**日志保留期截断 30d 窗口**~~ ✅ 已修复（2026-10-22）：
    新增日聚合表 `usage_daily_rollups`，窗口长于保留期时改查它（见 [04](04-PRD-用量统计.md)）。
 
-## 5. E2E 测试规约
+## 6. E2E 测试规约
 
 `tests/test_e2e.py` 开头的清场会**删光目标实例的全部上游/映射/Key**。跑法必须是隔离实例：
 
@@ -174,8 +236,10 @@ set SWITCHBOARD_DATA_DIR=<临时目录>  &&  python run.py --no-browser --port 8
 # 再把 t.BASE 补丁为 http://127.0.0.1:8010
 ```
 
-正式配置零接触。`tests/mock_upstream.py` 在独立端口（如 8100）提供假上游。
+正式配置零接触。`tests/mock_upstream.py` / `tests/mock_failover_upstream.py`
+在独立端口（如 8100 / 8115）提供假上游，后者靠模型名区分 500/429/404/正常行为。
 
-两个 e2e 脚本的地址都支持环境变量覆盖，不用再改源码里的硬编码：
+三个 e2e 脚本的地址都支持环境变量覆盖，不用再改源码里的硬编码：
 `SWITCHBOARD_BASE`（主服务）、`SWITCHBOARD_MOCK`（假上游）。
-CI 里 `test_e2e.py` 跑 8000 + 8100，`e2e_voice.py` 跑 8124 + 8110，互不干扰。
+CI 里 `test_e2e.py` 跑 8000 + 8100，`e2e_voice.py` 跑 8124 + 8110，
+`e2e_failover.py` 跑 8130 + 8115，互不干扰。

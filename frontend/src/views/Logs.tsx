@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Card, Table, Button, Input, Select, Tag, App, Space, Modal } from 'antd'
 import { SearchOutlined, ClearOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { GET, DEL } from '../api/client'
-import type { CavemanStats, LogDetail, LogItem, LogPage, VoiceMode } from '../api/types'
+import type { CavemanStats, FailoverStep, LogDetail, LogItem, LogPage, VoiceMode } from '../api/types'
 import { fmtTime } from '../utils/format'
 
 const PAGE_SIZE = 50
@@ -24,6 +24,17 @@ function parseStats(raw?: string): CavemanStats | null {
     return JSON.parse(raw) as CavemanStats
   } catch {
     return null
+  }
+}
+
+/** 解析故障转移轨迹（failover_trail 是 JSON 字符串，成功请求也可能只有一档） */
+function parseTrail(raw?: string): FailoverStep[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? (v as FailoverStep[]) : []
+  } catch {
+    return []
   }
 }
 
@@ -116,12 +127,28 @@ export default function Logs() {
         loading={!items}
         dataSource={items || []}
         pagination={false}
-        scroll={{ x: 1240 }}
+        scroll={{ x: 1330 }}
         columns={[
           { title: '时间', dataIndex: 'ts', width: 130, render: (v: number) => <span style={{ fontSize: 12, color: '#93a0b8', whiteSpace: 'nowrap' }}>{fmtTime(v)}</span> },
           { title: '状态', dataIndex: 'ok', width: 80, render: (v: boolean) => (v ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>) },
           { title: '模型', dataIndex: 'request_model', width: 160, ellipsis: true, render: (v: string) => <span className="mono" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{v || '-'}</span> },
           { title: '上游', dataIndex: 'upstream_name', width: 140, render: (v: string) => <span style={{ fontSize: 12 }}>{v || '-'}</span> },
+          {
+            title: '切换',
+            key: 'trail',
+            width: 92,
+            render: (_: unknown, r: LogItem) => {
+              const trail = parseTrail(r.failover_trail)
+              const switches = trail.length - 1
+              return switches > 0 ? (
+                <Tag color="orange" style={{ fontSize: 10.5 }} title={trail.map((s) => `第${s.hop}档 ${s.upstream || '自动调度'} · ${s.status ? s.status : '未发出'} · ${s.result}`).join('\n')}>
+                  切换 {switches} 次
+                </Tag>
+              ) : (
+                <span style={{ color: '#3a4356' }}>-</span>
+              )
+            },
+          },
           { title: '客户端', dataIndex: 'client_name', width: 110, render: (v: string) => <span style={{ fontSize: 12 }}>{v || '-'}</span> },
           {
             title: '协议',
@@ -201,6 +228,34 @@ export default function Logs() {
               <span style={{ color: '#5c6880' }}>模型</span><span className="mono">{detail.request_model}{detail.actual_model && detail.actual_model !== detail.request_model ? ` → ${detail.actual_model}` : ''}</span>
               <span style={{ color: '#5c6880' }}>上游</span><span>{detail.upstream_name || '-'}</span>
             </div>
+            {(() => {
+              const trail = parseTrail(detail.failover_trail)
+              if (trail.length <= 1) return null
+              return (
+                <div>
+                  <div style={{ color: '#5c6880', marginBottom: 4 }}>切换轨迹（按档从上到下依次尝试）</div>
+                  <div style={{ display: 'grid', gap: 3, fontSize: 12 }}>
+                    {trail.map((s, i) => (
+                      <span key={i} style={{ whiteSpace: 'nowrap' }}>
+                        <span style={{ color: '#5c6880', display: 'inline-block', width: 56 }}>第{s.hop}档</span>
+                        <span className="mono">{s.model || '-'}</span>
+                        <span style={{ color: '#8a94a8' }}> @ {s.upstream || '自动调度'}</span>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            marginLeft: 10,
+                            color: s.status === 200 ? '#45c98a' : s.status === 0 ? '#5c6880' : '#f2706b',
+                          }}
+                        >
+                          {s.status === 200 ? '成功' : s.status === 0 ? '未发出' : `HTTP ${s.status}`}
+                        </span>
+                        <span style={{ color: '#8a94a8', marginLeft: 10 }}>{s.result || ''}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
             {parseStats(detail.caveman_stats) && (
               <div>
                 <div style={{ color: '#5c6880', marginBottom: 4 }}>压缩统计</div>

@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from . import caveman
 from . import converter as cv
 from . import responses_converter as rc
-from .config import store
+from .config import ChainHop, store
 from .database import db
 from .limiter import limiter
 from .upstream_pool import pool
@@ -26,6 +26,20 @@ from .upstream_pool import pool
 router = APIRouter()
 
 ANTHROPIC_VERSION = "2023-06-01"
+
+
+def should_failover(status_code: int) -> bool:
+    """该状态码是否应该切到故障转移链的下一档。
+
+    - **5xx**：上游真的炸了 → 换节点
+    - **429**：限流 → 换节点（同一上游重试大概率还是限）
+    - **404**：模型不存在 / 已被下线 → 换节点（别家可能还有同模型的）
+
+    不切的情况：
+    - **400/422**：客户端请求本身有问题，换节点也一样错
+    - **401/403**：Key 失效或被拒，换节点无意义（该上游会被立即熔断）
+    """
+    return status_code >= 500 or status_code in (429, 404)
 
 # 协议转换查表：(入站协议, 上游协议) -> 请求转换函数
 # 「responses」与「chat」共用一套语义（Responses 只是形状不同），
@@ -401,16 +415,28 @@ async def handle_request(request: Request, in_protocol: str):
                 403, "permission_error",
             )
 
-    # ---- 模型映射 ----
-    target_model, bound_upstream = store.resolve_model(model)
-    pinned = ck.upstream_id if (ck and ck.upstream_id) else bound_upstream
+    # ---- 模型映射 → 故障转移链 ----
+    # 映射命中 → 用该映射的链（可能多档，逐档降级）；
+    # 未命中 → 单档「自动调度 + 原模型名」，沿用公共调度。
+    hops = store.resolve_chain(model)
+    target_model = (hops[0].target if hops else "") or model
+    # 客户端 Key 的固定上游优先于映射（显式指定 > 映射里的绑定）
+    pinned = ck.upstream_id if (ck and ck.upstream_id) else ""
+    if pinned:
+        # Key 固定了上游：只走这一档，不做链式降级
+        hops = [ChainHop(upstream_id=pinned, target=target_model)]
 
-    # ---- 选上游候选 ----
-    cands = pool.candidates(target_model, pinned)
+    # ---- 展开链 ----
+    plan = pool.plan_chain(hops, fallback_model=model)
+    cands = [e.upstream for e in plan if e.upstream is not None and not e.skipped]
     if not cands:
         hint = "没有可用的上游节点"
         if store.list_upstreams():
-            hint = "所有上游均处于冷却或已禁用，请检查上游配置或点击「重置状态」"
+            skipped = "；".join(
+                f"第{e.hop + 1}档 {e.skipped}" for e in plan if e.skipped
+            )
+            hint = ("所有上游均处于冷却或已禁用，请检查上游配置或点击「重置状态」"
+                    + (f"（{skipped}）" if skipped else ""))
         else:
             hint = "尚未配置任何上游节点，请在管理后台「上游管理」中添加"
         return err_response(in_protocol, hint, 503, "api_error")
@@ -452,24 +478,34 @@ async def handle_request(request: Request, in_protocol: str):
     tried: list[str] = []
     last_err = ""
     last_status = 0
+    # 故障转移轨迹：每一档的尝试结果，写进请求日志
+    trail: list[dict[str, Any]] = []
 
-    # max_retries 表示「首个节点失败后还能换几个节点」，据此决定本请求最多尝试几个上游
-    max_nodes = min(len(cands), max(1, cands[0].max_retries + 1))
-
-    for up in cands[:max_nodes]:
+    # 按链的顺序逐档尝试。plan 里已排好序、已剔除不可用的档。
+    for entry in plan:
+        up = entry.upstream
+        if up is None:
+            # 规划期就跳过的档（上游不存在/停用/冷却/熔断）
+            trail.append({"hop": entry.hop + 1, "upstream": "", "model": entry.target,
+                          "status": 0, "result": entry.skipped or "跳过"})
+            continue
         tried.append(up.name)
+        hop_model = entry.target or target_model
 
         # ---- 构造上游 payload ----
         if in_protocol == up.protocol:
             payload = dict(body)
-            payload["model"] = target_model
+            payload["model"] = hop_model
         else:
             conv = _REQUEST_CONVERTERS.get((in_protocol, up.protocol))
             if conv is None:
                 last_err = (f"{up.name}: 暂不支持 {in_protocol} → {up.protocol} 协议转换")
                 pool.report_failure(up, last_err)
+                trail.append({"hop": entry.hop + 1, "upstream": up.name,
+                              "model": hop_model, "status": 0,
+                              "result": last_err[:120]})
                 continue
-            payload = conv(body, target_model)
+            payload = conv(body, hop_model)
 
         try:
             resp = await pool.call(up, payload, stream, session_id=session_id)
@@ -477,6 +513,8 @@ async def handle_request(request: Request, in_protocol: str):
             # 注意：这里不能 aclose 共享连接池，否则会打断并发中的其他请求
             pool.report_failure(up, f"{type(e).__name__}: {e}")
             last_err = f"{up.name}: {type(e).__name__}: {e}"
+            trail.append({"hop": entry.hop + 1, "upstream": up.name, "model": hop_model,
+                          "status": 0, "result": f"{type(e).__name__}: {e}"[:120]})
             continue
 
         # ---- 上游返回错误：可重试则切换下一个 ----
@@ -493,19 +531,26 @@ async def handle_request(request: Request, in_protocol: str):
                                 status_code=resp.status_code)
             last_err = f"{up.name} -> HTTP {resp.status_code}: {text[:300]}"
             last_status = resp.status_code
-            if resp.status_code >= 500 or resp.status_code == 429:
+            trail.append({"hop": entry.hop + 1, "upstream": up.name, "model": hop_model,
+                          "status": resp.status_code,
+                          "result": f"HTTP {resp.status_code}"})
+            # 切换条件：5xx（上游炸了）/ 429（限流）/ 404（模型不存在，
+            # 比如模型被下线——换节点可能还有同模型的别家）。
+            # 400/401/403 属客户端或鉴权问题，换节点无意义，直接返回。
+            if should_failover(resp.status_code):
                 continue  # 换下一个上游
-            # 4xx 属客户端问题，重试无意义
+            # 其余 4xx 属客户端问题，重试无意义
             latency = int((time.time() - t0) * 1000)
             db.add(client_key=(ck.key if ck else ""), client_name=(ck.name if ck else "匿名"),
                    upstream_id=up.id, upstream_name=up.name, in_protocol=in_protocol,
-                   out_protocol=up.protocol, request_model=model, actual_model=target_model,
+                   out_protocol=up.protocol, request_model=model, actual_model=hop_model,
                    stream=int(stream), status=resp.status_code, ok=0,
                    input_tokens=in_tokens_est, latency_ms=latency,
                    error=f"HTTP {resp.status_code}: {text[:300]}",
                    request_body=req_capture, response_body=_cap_detail(text),
                    caveman_saved=caveman_saved, voice_injected=int(voice_on),
-                   caveman_stats=json.dumps(caveman_stats, ensure_ascii=False))
+                   caveman_stats=json.dumps(caveman_stats, ensure_ascii=False),
+                   failover_trail=json.dumps(trail, ensure_ascii=False))
             return err_response(in_protocol, f"上游返回错误：{text[:400]}",
                                 resp.status_code, "api_error")
 
@@ -514,18 +559,22 @@ async def handle_request(request: Request, in_protocol: str):
         client_name = ck.name if ck else "匿名"
         client_key_val = ck.key if ck else ""
 
-        def make_log(captured: str, out_obj: Any = None, up=up, in_tok=in_tokens_est):
+        def make_log(captured: str, out_obj: Any = None, up=up, in_tok=in_tokens_est,
+                     hop_model=hop_model):
             tin, tout, cread, cwrite = extract_usage(captured, up.protocol)
             if not tin:
                 tin = in_tok
             if not tout:
                 # 上游未返回 usage 时按产出文本估算，避免统计恒为 0
                 tout = estimate_tokens(captured) if stream else estimate_tokens(resp_text(out_obj))
+            # 成功的那一档也记进轨迹，末端标「成功」
+            trail.append({"hop": entry.hop + 1, "upstream": up.name, "model": hop_model,
+                          "status": 200, "result": "成功"})
             db.add(
                 client_key=client_key_val, client_name=client_name,
                 upstream_id=up.id, upstream_name=up.name,
                 in_protocol=in_protocol, out_protocol=up.protocol,
-                request_model=model, actual_model=target_model,
+                request_model=model, actual_model=hop_model,
                 stream=int(stream), status=200, ok=1,
                 input_tokens=tin, output_tokens=tout,
                 cache_read_tokens=cread, cache_write_tokens=cwrite,
@@ -534,6 +583,7 @@ async def handle_request(request: Request, in_protocol: str):
                 response_body=_resp_summary(captured, out_obj, up.protocol, tin, tout),
                 caveman_saved=caveman_saved, voice_injected=int(voice_on),
                 caveman_stats=json.dumps(caveman_stats, ensure_ascii=False),
+                failover_trail=json.dumps(trail, ensure_ascii=False),
             )
             pool.report_success(up, int((time.time() - up_start) * 1000))
             if ck:
@@ -570,17 +620,17 @@ async def handle_request(request: Request, in_protocol: str):
             # 流式转换：(上游协议, 入站协议) 决定用哪个转换器
             src_lines = tee_lines(_byte_iter(resp))
             if up.protocol == "openai" and in_protocol == "anthropic":
-                conv = cv.openai_stream_to_anthropic_sse(src_lines, target_model, in_tokens_est)
+                conv = cv.openai_stream_to_anthropic_sse(src_lines, hop_model, in_tokens_est)
             elif up.protocol == "anthropic" and in_protocol == "openai":
-                conv = cv.anthropic_stream_to_openai_sse(src_lines, target_model)
+                conv = cv.anthropic_stream_to_openai_sse(src_lines, hop_model)
             elif up.protocol == "responses" and in_protocol == "openai":
-                conv = rc.responses_stream_to_chat_sse(src_lines, target_model)
+                conv = rc.responses_stream_to_chat_sse(src_lines, hop_model)
             elif up.protocol == "responses" and in_protocol == "anthropic":
-                conv = rc.responses_stream_to_anthropic_sse(src_lines, target_model, in_tokens_est)
+                conv = rc.responses_stream_to_anthropic_sse(src_lines, hop_model, in_tokens_est)
             elif up.protocol == "openai" and in_protocol == "responses":
-                conv = rc.chat_stream_to_responses_sse(src_lines, target_model)
+                conv = rc.chat_stream_to_responses_sse(src_lines, hop_model)
             elif up.protocol == "anthropic" and in_protocol == "responses":
-                conv = rc.anthropic_stream_to_responses_sse(src_lines, target_model)
+                conv = rc.anthropic_stream_to_responses_sse(src_lines, hop_model)
             else:
                 make_log("".join(raw_buf))
                 return err_response(
@@ -620,7 +670,7 @@ async def handle_request(request: Request, in_protocol: str):
                     in_protocol,
                     f"暂不支持 {up.protocol} → {in_protocol} 响应转换",
                     502, "api_error")
-            out = conv(data, target_model, in_tokens_est)
+            out = conv(data, hop_model, in_tokens_est)
 
         make_log(text, out)
         return JSONResponse(content=out)
@@ -635,7 +685,8 @@ async def handle_request(request: Request, in_protocol: str):
            error=last_err[:500] or "全部上游均不可用",
            request_body=req_capture, response_body="",
            caveman_saved=caveman_saved, voice_injected=int(voice_on),
-           caveman_stats=json.dumps(caveman_stats, ensure_ascii=False))
+           caveman_stats=json.dumps(caveman_stats, ensure_ascii=False),
+           failover_trail=json.dumps(trail, ensure_ascii=False))
     return err_response(
         in_protocol,
         f"所有上游调用失败（已尝试 {len(tried)} 个）：{last_err[:300]}",

@@ -99,12 +99,22 @@ export interface UpstreamInput {
   enabled: boolean
 }
 
+/** 故障转移链的一档：上游 + 该上游上的实际模型 */
+export interface ChainHop {
+  upstream_id: string
+  target: string
+  /** 后端在 /api/mappings 响应里补的上游名（只读） */
+  upstream_name?: string
+}
+
 export interface Mapping {
   id: string
   alias: string
   target: string
   upstream_id: string | null
   upstream_name: string | null
+  /** 故障转移链：从上到下依次尝试。空 = 走老语义（target + upstream_id 单档） */
+  chain: ChainHop[]
   note: string
   enabled: boolean
 }
@@ -113,6 +123,7 @@ export interface MappingInput {
   alias: string
   target: string
   upstream_id: string
+  chain: ChainHop[]
   note: string
   enabled: boolean
 }
@@ -143,6 +154,20 @@ export interface ClientKeyInput {
   enabled: boolean
 }
 
+/** 故障转移轨迹的一步（后端存 JSON 字符串） */
+export interface FailoverStep {
+  /** 第几档（1 起） */
+  hop: number
+  /** 上游名；规划期就跳过的档为空串 */
+  upstream: string
+  /** 该档发给上游的模型名 */
+  model: string
+  /** HTTP 状态码；0 = 没发出去（跳过 / 网络异常） */
+  status: number
+  /** 结果说明（成功 / 跳过原因 / 错误摘要） */
+  result: string
+}
+
 export interface LogItem {
   id: number
   ts: number
@@ -159,6 +184,8 @@ export interface LogItem {
   caveman_saved?: number
   voice_injected?: number
   caveman_stats?: string
+  /** 故障转移轨迹（JSON 字符串） */
+  failover_trail?: string
 }
 
 /** Say less 三态模式 */

@@ -98,15 +98,45 @@ class Upstream(BaseModel):
         return self.circuit_state == "open" and self.circuit_remaining() <= 0
 
 
+class ChainHop(BaseModel):
+    """故障转移链的一档：上游 + 该上游上的实际模型。
+
+    `upstream_id` 为空表示「按调度策略自动选上游」，此时 `target`
+    仍是发给上游的模型名。
+    """
+
+    upstream_id: str = ""
+    target: str = ""
+
+
 class ModelMapping(BaseModel):
-    """请求模型名 -> 上游实际模型名（可绑定指定上游）。"""
+    """请求模型名 -> 上游实际模型名（可绑定指定上游）。
+
+    `chain` 是故障转移链：从上到下依次尝试，每档 = (上游, 模型)。
+    为空时退化成老语义——用 `target` + `upstream_id` 这一档。
+    """
 
     id: str = Field(default_factory=lambda: new_id("mm_"))
     alias: str = ""
     target: str = ""
     upstream_id: str = ""
+    chain: list[ChainHop] = Field(default_factory=list)
     enabled: bool = True
     note: str = ""
+
+    def hops(self) -> list[ChainHop]:
+        """把映射解析成有序的故障转移链。
+
+        链为空 → 用 `target`/`upstream_id` 造一档（老配置零迁移）。
+        链非空 → 完全以链为准；`target`/`upstream_id` 只作元数据保留。
+        链里全是空档（既没上游也没模型）→ 同样退回老字段，
+        免得出现「配了链但一档都试不了」的哑配置。
+        """
+        if self.chain:
+            usable = [h for h in self.chain if h.upstream_id or h.target]
+            if usable:
+                return usable
+        return [ChainHop(upstream_id=self.upstream_id, target=self.target)]
 
 
 class ClientKey(BaseModel):
@@ -397,6 +427,12 @@ class ConfigStore:
                 if m.id == mid:
                     for k, v in data.items():
                         if k in ModelMapping.model_fields:
+                            # `chain` 是 list[ChainHop]——直接 setattr 进去的是
+                            # 原始 dict，取属性时会炸。必须按 ModelMapping 重新校验，
+                            # 让 Pydantic 把每档转成 ChainHop。
+                            if k == "chain":
+                                v = [ChainHop.model_validate(h) if isinstance(h, dict) else h
+                                     for h in (v or [])]
                             setattr(m, k, v)
                     self.save()
                     return m
@@ -411,13 +447,17 @@ class ConfigStore:
                 return True
         return False
 
-    def resolve_model(self, model: str) -> tuple[str, str]:
-        """返回 (实际模型名, 指定上游 id 或空)。无映射则原样返回。"""
+    def resolve_chain(self, model: str) -> list[ChainHop]:
+        """返回别名对应的故障转移链。
+
+        有映射 → 该映射的链（`hops()` 已处理老配置的退化）。
+        无映射 → 单档「自动调度 + 原样模型名」，即沿用公共调度。
+        """
         with self._lock:
             for m in self.config.mappings:
                 if m.enabled and m.alias and m.alias == model:
-                    return (m.target or model, m.upstream_id)
-        return (model, "")
+                    return m.hops()
+        return [ChainHop(upstream_id="", target=model)]
 
     # ---------- client keys ----------
     def list_keys(self) -> list[ClientKey]:
