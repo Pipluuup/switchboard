@@ -19,6 +19,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 单测隔离：强制使用临时数据目录，绝不读写正式 data/config.json。
+# 本测试会改写 store 里的上游/映射并触发落盘——曾经直接把本机正式配置覆盖掉。
+import tempfile  # noqa: E402
+
+os.environ["SWITCHBOARD_DATA_DIR"] = tempfile.mkdtemp(prefix="sb-test-data-")
+
 from backend.config import ChainHop, ModelMapping, store  # noqa: E402
 from backend.proxy_routes import should_failover  # noqa: E402
 from backend.upstream_pool import UpstreamPool  # noqa: E402

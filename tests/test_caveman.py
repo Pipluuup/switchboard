@@ -10,6 +10,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 单测隔离：强制使用临时数据目录，绝不读写正式 data/config.json。
+import tempfile  # noqa: E402
+
+os.environ["SWITCHBOARD_DATA_DIR"] = tempfile.mkdtemp(prefix="sb-test-data-")
+
 from backend import caveman  # noqa: E402
 from backend.config import store  # noqa: E402
 

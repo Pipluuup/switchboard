@@ -21,6 +21,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 单测隔离：强制使用临时数据目录，绝不读写正式 data/config.json。
+import tempfile  # noqa: E402
+
+os.environ["SWITCHBOARD_DATA_DIR"] = tempfile.mkdtemp(prefix="sb-test-data-")
+
 from backend.config import Upstream, store  # noqa: E402
 from backend.upstream_pool import UpstreamPool  # noqa: E402
 

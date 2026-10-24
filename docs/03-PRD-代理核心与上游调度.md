@@ -281,6 +281,11 @@ Select 固定 42% + `flexShrink: 0`，AutoComplete `flex: 1; minWidth: 0`。
 
 ## 7. E2E 测试规约
 
+**单测同样要隔离**（2026-10-24 教训）：所有 import `backend.config`（store）
+的单测在 import 前把 `SWITCHBOARD_DATA_DIR` 指到临时目录——否则测试改写
+store 后触发 `save()`，会直接覆盖本机正式 `data/config.json`。
+`test_failover_chain` / `test_circuit` / `test_caveman` / `test_pools` 均已照此处理。
+
 `tests/test_e2e.py` 开头的清场会**删光目标实例的全部上游/映射/Key**。跑法必须是隔离实例：
 
 ```
