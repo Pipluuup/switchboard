@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .config import ClientKey, ModelMapping, Settings, Upstream, store
+from .config import AccountPool, ClientKey, ModelMapping, Settings, Upstream, store
 from .database import db
 from .limiter import limiter
 from .upstream_pool import pool
@@ -235,6 +235,124 @@ async def delete_mapping(mid: str, _=Depends(require_admin)):
     if not store.delete_mapping(mid):
         raise HTTPException(404, "映射不存在")
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ 账号池
+
+
+def _pool_upstream_for(pid: str) -> Upstream | None:
+    """池组上游节点：note 以 account-pool:<pid> 打标的那一个（弱引用绑定）。"""
+    tag = AccountPool.UPSTREAM_TAG + pid
+    for u in store.list_upstreams():
+        if (u.note or "").strip() == tag:
+            return u
+    return None
+
+
+def _ensure_pool_upstream(p: AccountPool) -> Upstream:
+    """同步自动建节点：池存在就必须有一个同名池组上游节点。
+
+    已存在则只把名称/协议/地址对齐池的最新配置（note 是绑定锚点，不动）。
+    """
+    node = _pool_upstream_for(p.id)
+    if node is None:
+        return store.add_upstream({
+            "name": p.name,
+            "protocol": p.protocol,
+            "base_url": p.base_url,
+            "enabled": True,
+            "note": p.upstream_note(),
+        })
+    node.name = p.name
+    node.protocol = p.protocol
+    if (p.base_url or "").strip():
+        node.base_url = p.base_url
+    store.save()
+    return node
+
+
+@router.get("/pools")
+async def list_pools(_=Depends(require_admin)):
+    out = []
+    for p in store.list_pools():
+        d = p.model_dump()
+        node = _pool_upstream_for(p.id)
+        d["upstream_id"] = node.id if node else ""
+        out.append(d)
+    return out
+
+
+@router.post("/pools")
+async def create_pool(data: dict[str, Any], _=Depends(require_admin)):
+    data.pop("id", None)
+    p = store.add_pool(data)
+    node = _ensure_pool_upstream(p)
+    d = p.model_dump()
+    d["upstream_id"] = node.id
+    return d
+
+
+@router.put("/pools/{pid}")
+async def update_pool(pid: str, data: dict[str, Any], _=Depends(require_admin)):
+    p = store.update_pool(pid, data)
+    if not p:
+        raise HTTPException(404, "账号池不存在")
+    node = _ensure_pool_upstream(p) if p.auto_upstream else _pool_upstream_for(pid)
+    d = p.model_dump()
+    d["upstream_id"] = node.id if node else ""
+    return d
+
+
+@router.delete("/pools/{pid}")
+async def delete_pool(pid: str, _=Depends(require_admin)):
+    if not store.delete_pool(pid):
+        raise HTTPException(404, "账号池不存在")
+    # 池组上游节点保留：请求失败（账号全停）时用户可以手动删，
+    # 避免删池连带删掉一个还可能被复用的上游配置
+    node = _pool_upstream_for(pid)
+    return {"ok": True, "upstream_id": node.id if node else "",
+            "message": "池已删除；池组上游节点保留，可自行在上游管理中处理"}
+
+
+@router.post("/pools/{pid}/probe")
+async def probe_pool(pid: str, _=Depends(require_admin)):
+    """逐账号探活：用账号凭证请求 {base_url}/models，2xx/3xx 算可用。
+
+    api_key 型账号走 Bearer；cookie 型账号（WorkBuddy 等）走 Cookie 头。
+    401/403 说明凭证失效——探活只报告结果，不自动停用（与运行时行为区分）。
+    """
+    p = store.get_pool(pid)
+    if not p:
+        raise HTTPException(404, "账号池不存在")
+    base = (p.base_url or "").rstrip("/")
+    if not base:
+        raise HTTPException(400, "账号池未配置 Base URL，无法探活")
+    out = []
+    for a in p.accounts:
+        probe = Upstream.model_validate({
+            "name": a.label or a.id, "protocol": p.protocol,
+            "base_url": base, "api_key": a.api_key,
+        })
+        headers: dict[str, str] = {}
+        if (a.api_key or "").strip():
+            headers["Authorization"] = f"Bearer {a.api_key}"
+            if p.protocol == "gemini":
+                headers["x-goog-api-key"] = a.api_key
+        if (a.cookie or "").strip():
+            headers["Cookie"] = a.cookie.strip()
+        if p.protocol == "anthropic":
+            headers["anthropic-version"] = "2023-06-01"
+        try:
+            r = await pool.get_client(probe).get(f"{base}/models",
+                                                 headers=headers, timeout=15.0)
+            ok = r.status_code < 400
+            out.append({"account_id": a.id, "label": a.label, "ok": ok,
+                        "status": r.status_code,
+                        "error": "" if ok else r.text[:200]})
+        except Exception as e:  # noqa: BLE001
+            out.append({"account_id": a.id, "label": a.label, "ok": False,
+                        "status": 0, "error": f"{type(e).__name__}: {e}"[:200]})
+    return {"items": out}
 
 
 # ------------------------------------------------------------------ 客户端 Key
@@ -495,11 +613,13 @@ async def import_config(payload: dict[str, Any], _=Depends(require_admin)):
         ups = [Upstream.model_validate(x) for x in payload.get("upstreams", [])]
         maps = [ModelMapping.model_validate(x) for x in payload.get("mappings", [])]
         keys = [ClientKey.model_validate(x) for x in payload.get("client_keys", [])]
+        pools = [AccountPool.model_validate(x) for x in payload.get("account_pools", [])]
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"配置格式错误：{e}")
     store.config.upstreams = ups
     store.config.mappings = maps
     store.config.client_keys = keys
+    store.config.account_pools = pools
     if payload.get("settings"):
         # 旧配置里的布尔 voice_enabled 要迁移成三态 voice_mode，
         # 否则导入后设置被静默丢弃（voice_enabled 已不在 model_fields 里）
@@ -510,7 +630,12 @@ async def import_config(payload: dict[str, Any], _=Depends(require_admin)):
                 setattr(store.config.settings, k, v)
     store.save()
     pool.reset_state()
-    return {"ok": True, "upstreams": len(ups), "mappings": len(maps), "keys": len(keys)}
+    # 导入的池重新绑池组上游节点（note 锚点若在导入的上游里就复用，缺了就补建）
+    for p in store.config.account_pools:
+        if p.auto_upstream:
+            _ensure_pool_upstream(p)
+    return {"ok": True, "upstreams": len(ups), "mappings": len(maps), "keys": len(keys),
+            "pools": len(pools)}
 
 
 @router.get("/quickstart")

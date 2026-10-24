@@ -52,6 +52,11 @@ jobs:
       - name: Failover chain tests
         run: python tests/test_failover_chain.py
 
+      # 账号池：顺序轮换 / 额度用尽换号 / 401 自动停用 / 池组节点绑定。
+      # 纯内存对象，不需要启动服务。
+      - name: Account pool tests
+        run: python tests/test_pools.py
+
       # 前端 ↔ 后端契约：API 路径 / 协议枚举 / 视图对齐。
       # 纯静态检查（读源码比对），不需要 Node。
       - name: Frontend contract tests

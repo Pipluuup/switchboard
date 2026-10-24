@@ -128,6 +128,45 @@ export interface MappingInput {
   enabled: boolean
 }
 
+/** 账号池里的一枚账号：同一家上游服务的多份凭证之一 */
+export interface PooledAccount {
+  id: string
+  label: string
+  api_key: string
+  cookie: string
+  enabled: boolean
+  usage_used: number
+  usage_limit: number
+  note: string
+  last_used_at: number
+  total_requests: number
+  failed_requests: number
+  last_error: string
+}
+
+export interface AccountPool {
+  id: string
+  name: string
+  kind: string
+  base_url: string
+  protocol: UpstreamProtocol
+  notes: string
+  auto_upstream: boolean
+  accounts: PooledAccount[]
+  /** 后端在 /api/pools 响应里补的池组上游节点 id（只读） */
+  upstream_id?: string
+}
+
+export interface AccountPoolInput {
+  name: string
+  kind: string
+  base_url: string
+  protocol: UpstreamProtocol
+  notes: string
+  auto_upstream: boolean
+  accounts: PooledAccount[]
+}
+
 export interface ClientKey {
   id: string
   name: string

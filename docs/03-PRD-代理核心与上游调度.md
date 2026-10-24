@@ -51,7 +51,59 @@
 - `tests/e2e_failover.py`（隔离实例 8130 + mock 8115）：真实 HTTP 路径上
   500/429/404 切档、400/401 不切、整链失败、流式切换、轨迹落日志。
 
-## 2. 协议转换（converter.py + responses_converter.py）
+## 2. 账号池（2026-10-24 新增）
+
+### 目标
+
+同一家上游服务往往不止一份凭证：WorkBuddy AI 这类
+「登录即授权」的服务按账号计费，多买几个号就能堆额度；
+标准 API 服务也可能一人多 Key。账号池把这些凭证放进一个池，
+请求时**顺序轮换**：优先第一个，前面额度用尽或凭证失效自动换下一个
+（交互参考 CC-Switch v4 的账号池页面）。
+
+### 数据与绑定（config.py）
+
+- `AccountPool { id: ap_*, name, kind, base_url, protocol, notes, auto_upstream, accounts }`
+  + `PooledAccount { id: ac_*, label, api_key, cookie, enabled, usage_used, usage_limit, ... }`。
+  凭证二选一：`api_key`（多 Key 轮换）或 `cookie`（WorkBuddy 的
+  `__Host-console_session` 等登录态）。
+- **池组上游节点是弱引用绑定**：创建池时自动建一个同名 `Upstream` 节点，
+  其 `note` 写成 `account-pool:<pool_id>`（`AccountPool.UPSTREAM_TAG`）。
+  不动 `Upstream` schema；`pool_id_of(up)` 读 note 前缀反查池 id。
+  删池**保留**节点（避免连带删掉可复用的上游配置）；
+  改池名/协议/地址后节点自动对齐（`_ensure_pool_upstream`）。
+
+### 轮换与失败状态机（upstream_pool.py）
+
+- `current_account(pool_id)`：按 accounts 顺序取第一个
+  「`enabled` 且（`usage_limit == 0` 或 `usage_used < usage_limit`）」的账号。
+- 账号级失败与上游熔断器**分开记账**（互不影响）：
+  - 任意失败：`failed_requests += 1`、记 `last_error`；
+  - **401/403 → `enabled = False`**（凭证失效，自动停用，
+    下一次请求自然轮到下一枚）；400/404/5xx/网络错误只记账不停用。
+  - 成功：`total_requests += 1`、`usage_used += 1`、清 `last_error`。
+- `usage_used` 是**本地记账**（请求数，不是官方额度）；
+  `usage_limit = 0` 表示未配上限。额度管理页可手动维护。
+
+### 请求路径（proxy_routes.py）
+
+`pool_id_of(up)` 命中 → `current_account` 选账号 → `pool.call(..., account=acct)`
+→ `endpoint()` 里注入凭证：cookie 型加 `Cookie` 头（不再带 Authorization）、
+api_key 型覆盖 Bearer。成败分别走 `report_account_success / report_account_failure`。
+池组节点本身**不需要配 api_key**——它只是轮换的挂载点。
+
+### 管理面（admin_routes.py）
+
+GET/POST `/api/pools`、PUT/DELETE `/api/pools/{pid}`、
+POST `/api/pools/{pid}/probe`（逐账号用自身凭证请求 `/models`，只报告不停用）。
+配置导出/导入覆盖 `account_pools`，导入后自动补建缺失的池组节点。
+
+### 验证基准
+
+- `tests/test_pools.py` 18 条：顺序轮换 / 额度用尽换号 / 401 自动停用 /
+  5xx 只记账 / 成功记账 / 池组节点绑定与删池保留。
+
+## 3. 协议转换（converter.py + responses_converter.py）
 
 ### 目标
 
@@ -97,7 +149,7 @@
 
 两个套件合起来是转换行为的**唯一权威描述**——改转换器先读它们，改完必须全绿。
 
-## 3. 上游调度（upstream_pool.py）
+## 4. 上游调度（upstream_pool.py）
 
 ### 选路规则（`candidates()`）
 
@@ -203,7 +255,7 @@ Select 固定 42% + `flexShrink: 0`，AutoComplete `flex: 1; minWidth: 0`。
 `/models` 探活成功不代表真实请求成功——限流中的上游 `/models` 往往正常返回。
 若这里调 `report_success`，熔断器会被「探活成功」误判为已恢复。
 
-## 4. 代理入口（proxy_routes.py)
+## 5. 代理入口（proxy_routes.py)
 
 - `POST /v1/messages`（Anthropic 风格）、`POST /v1/chat/completions`（OpenAI Chat 风格）、
   `POST /v1/responses`（OpenAI Responses 风格），另有 `POST /v1/messages/count_tokens`
@@ -215,7 +267,7 @@ Select 固定 42% + `flexShrink: 0`，AutoComplete `flex: 1; minWidth: 0`。
   链路见 [02](02-架构与技术决策.md)；
 - 客户端断开/超时需保证上游连接被关闭，不悬挂。
 
-## 5. 已知限制（对应总览 #2/#4/#5）
+## 6. 已知限制（对应总览 #2/#4/#5）
 
 1. **请求头不透传**：`endpoint()` 自建请求头，客户端 UA、自定义头都到不了上游。
    改造方向：`Upstream` 增加 `custom_headers` 字段，`endpoint()` 与 `pool.call()`
@@ -227,7 +279,7 @@ Select 固定 42% + `flexShrink: 0`，AutoComplete `flex: 1; minWidth: 0`。
 3. ~~**日志保留期截断 30d 窗口**~~ ✅ 已修复（2026-10-22）：
    新增日聚合表 `usage_daily_rollups`，窗口长于保留期时改查它（见 [04](04-PRD-用量统计.md)）。
 
-## 6. E2E 测试规约
+## 7. E2E 测试规约
 
 `tests/test_e2e.py` 开头的清场会**删光目标实例的全部上游/映射/Key**。跑法必须是隔离实例：
 

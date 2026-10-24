@@ -8,10 +8,20 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .config import ChainHop, Upstream, store
+from .config import AccountPool, ChainHop, PooledAccount, Upstream, store
 from .database import db
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "[::1]"}
+
+
+def pool_id_of(up: Upstream) -> str:
+    """上游节点是否为账号池的池组节点：note 以 account-pool:<pool_id> 打标。
+
+    弱引用设计——池组节点与池的绑定只靠这个 note 前缀，不动 Upstream 的 schema。
+    """
+    note = (up.note or "").strip()
+    tag = AccountPool.UPSTREAM_TAG
+    return note[len(tag):].strip() if note.startswith(tag) else ""
 
 # OpenCode Go 要求：客户端用自有 UA（不能是 python-httpx 这类通用库名），
 # 并在 x-opencode-session 里携带稳定会话 ID 用于路由与提示缓存（docs/console/go）。
@@ -372,19 +382,83 @@ class UpstreamPool:
                 u.circuit_events = []
         self._half_open_inflight.clear()
 
+    # ---------------- 账号池轮换 ----------------
+    def current_account(self, pool_id: str) -> PooledAccount | None:
+        """按顺序选当前该用的账号：第一个「启用且额度未尽」的。
+
+        「额度未尽」= 未配上限（usage_limit==0）或 usage_used < usage_limit。
+        账号级 401/403 由 report_account_failure 自动停用，
+        停用后下一次请求自然轮到下一个账号——即「优先第一个，用尽换下一个」。
+        """
+        p = store.get_pool(pool_id)
+        if not p:
+            return None
+        for a in p.accounts:
+            if not a.enabled:
+                continue
+            if a.usage_limit and a.usage_used >= a.usage_limit:
+                continue
+            return a
+        return None
+
+    def report_account_success(self, pool_id: str, account_id: str) -> None:
+        """请求成功：本地记账（请求数 +1、用量 +1、最近使用时间、清掉上次错误）。"""
+        p = store.get_pool(pool_id)
+        if not p:
+            return
+        for a in p.accounts:
+            if a.id == account_id:
+                a.total_requests += 1
+                a.usage_used += 1
+                a.last_used_at = time.time()
+                a.last_error = ""
+                store.save()
+                return
+
+    def report_account_failure(self, pool_id: str, account_id: str,
+                               error: str, status_code: int = 0) -> None:
+        """账号级失败反馈（与上游熔断器分开记账，互不影响）：
+
+        - 失败计数与最近错误记到该账号名下；
+        - 401/403 = 凭证失效或被拒 → 自动停用该账号（enabled=False），
+          下一次请求自动轮到下一个账号。
+        """
+        p = store.get_pool(pool_id)
+        if not p:
+            return
+        for a in p.accounts:
+            if a.id == account_id:
+                a.failed_requests += 1
+                a.last_error = (f"HTTP {status_code}: {error}" if status_code
+                                else error)[:300]
+                if status_code in (401, 403):
+                    a.enabled = False
+                store.save()
+                return
+
     # ---------------- 请求构造 ----------------
     def endpoint(self, up: Upstream, in_protocol: str,
                  session_id: str | None = None, model: str = "",
-                 stream: bool = False) -> tuple[str, dict[str, str]]:
+                 stream: bool = False,
+                 account: PooledAccount | None = None) -> tuple[str, dict[str, str]]:
         base = up.base_url.rstrip("/")
         headers = {
             "Content-Type": "application/json",
             "Accept": "text/event-stream, application/json",
         }
+        # 账号池节点：用轮换选中的账号凭证覆盖池组节点自身的 Key。
+        # cookie 型账号（WorkBuddy 等「登录即授权」服务）走 Cookie 头，
+        # 不再带 Authorization；api_key 型账号走标准 Bearer。
+        key = up.api_key
+        if account is not None:
+            key = account.api_key
+            if (account.cookie or "").strip():
+                headers["Cookie"] = account.cookie.strip()
+                key = ""
         # Key 为空时不带 Authorization：让上游返回明确的 401「未提供令牌」，
         # 而不是 httpx 因非法头值直接抛 LocalProtocolError
-        if (up.api_key or "").strip():
-            headers["Authorization"] = f"Bearer {up.api_key}"
+        if (key or "").strip():
+            headers["Authorization"] = f"Bearer {key}"
         if up.protocol == "anthropic":
             headers["anthropic-version"] = "2023-06-01"
             url = f"{base}/messages"
@@ -393,8 +467,8 @@ class UpstreamPool:
         elif up.protocol == "gemini":
             # Gemini Native generateContent：模型名在 URL 里，不在请求体里；
             # 官方鉴权头是 x-goog-api-key（Authorization 对某些代理也有用，保留）
-            if (up.api_key or "").strip():
-                headers["x-goog-api-key"] = up.api_key
+            if (key or "").strip():
+                headers["x-goog-api-key"] = key
             act = "streamGenerateContent?alt=sse" if stream else "generateContent"
             url = f"{base}/models/{model}:{act}"
         else:
@@ -452,11 +526,15 @@ class UpstreamPool:
         stream: bool,
         session_id: str | None = None,
         model: str = "",
+        account: PooledAccount | None = None,
     ) -> httpx.Response:
-        """向上游发起请求（不读取 body，交由调用方流式消费）。"""
+        """向上游发起请求（不读取 body，交由调用方流式消费）。
+
+        account 非空 = 账号池轮换：凭证由该账号覆盖池组节点自身的 Key。
+        """
         model = str(payload.get("model") or model or "")
         url, headers = self.endpoint(up, "", session_id=session_id,
-                                     model=model, stream=stream)
+                                     model=model, stream=stream, account=account)
         timeout = up.timeout or store.config.settings.request_timeout
         cl = self.get_client(up)  # 与 build_request 必须用同一个连接池
         req = cl.build_request(

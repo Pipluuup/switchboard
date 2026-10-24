@@ -12,12 +12,14 @@ import {
   BookOutlined,
   RocketOutlined,
   LinkOutlined,
+  TeamOutlined,
 } from '@ant-design/icons'
 import { GET } from './api/client'
 import Dashboard from './views/Dashboard'
 import Usage from './views/Usage'
 import Upstreams from './views/Upstreams'
 import Mappings from './views/Mappings'
+import Pools from './views/Pools'
 import Keys from './views/Keys'
 import Logs from './views/Logs'
 import Settings from './views/Settings'
@@ -28,13 +30,14 @@ import './global.css'
 
 const { Sider, Header, Content } = Layout
 
-type ViewKey = 'dashboard' | 'usage' | 'logs' | 'upstreams' | 'mappings' | 'keys' | 'optimize' | 'clients' | 'settings'
+type ViewKey = 'dashboard' | 'usage' | 'logs' | 'upstreams' | 'pools' | 'mappings' | 'keys' | 'optimize' | 'clients' | 'settings'
 
 const VIEW_META: Record<ViewKey, { title: string; sub: string }> = {
   dashboard: { title: '概览', sub: '服务运行状态与用量统计' },
   usage: { title: '用量', sub: '5 小时 / 7 天 / 30 天滚动窗口的 Token 与请求消耗' },
   logs: { title: '请求日志', sub: '每次转发的明细与统计' },
   upstreams: { title: '上游管理', sub: '配置上游节点与故障切换' },
+  pools: { title: '账号池', sub: '同一家上游服务的多账号轮换' },
   mappings: { title: '模型映射', sub: '把客户端请求的模型别名映射到上游实际模型' },
   keys: { title: '客户端 Key', sub: '为本地工具分发独立密钥并限速' },
   optimize: { title: 'Token 优化', sub: 'Caveman 引擎：转发前压缩请求，节省上游 token' },
@@ -57,6 +60,7 @@ const MENU_ITEMS = [
     label: '路由',
     children: [
       { key: 'upstreams', icon: <ClusterOutlined />, label: '上游管理' },
+      { key: 'pools', icon: <TeamOutlined />, label: '账号池' },
       { key: 'mappings', icon: <SwapOutlined />, label: '模型映射' },
       { key: 'keys', icon: <KeyOutlined />, label: '客户端 Key' },
     ],
@@ -179,6 +183,7 @@ export default function App() {
             {view === 'usage' && <Usage />}
             {view === 'logs' && <Logs />}
             {view === 'upstreams' && <Upstreams />}
+            {view === 'pools' && <Pools />}
             {view === 'mappings' && <Mappings />}
             {view === 'keys' && <Keys />}
             {view === 'optimize' && <TokenOpt />}

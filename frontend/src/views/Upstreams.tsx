@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, InputNumber, Tag, Tooltip, Segmented, App, Space, Typography, Checkbox, Upload, Alert } from 'antd'
 import type { FormInstance } from 'antd'
-import { PlusOutlined, ThunderboltOutlined, GiftOutlined, ImportOutlined } from '@ant-design/icons'
+import { PlusOutlined, ThunderboltOutlined, GiftOutlined, ImportOutlined, TeamOutlined } from '@ant-design/icons'
 import { GET, POST, PUT, DEL } from '../api/client'
 import type { Upstream, UpstreamInput, TestResult } from '../api/types'
 import { fmtNum } from '../utils/format'
@@ -292,6 +292,12 @@ function statusTag(u: Upstream) {
 /** 免费节点：名称或备注里带 free 标记（默认内置，不可删除） */
 const isFree = (u: Upstream) => /free/i.test((u.name || '') + ' ' + (u.note || ''))
 
+/** 池组节点：note 以 account-pool:<pool_id> 打标（由账号池自动创建并维护） */
+const poolTagOf = (u: Upstream) => {
+  const m = /^\s*account-pool:(\S+)/.exec(u.note || '')
+  return m ? m[1] : ''
+}
+
 export default function Upstreams() {
   const { message } = App.useApp()
   const [list, setList] = useState<Upstream[] | null>(null)
@@ -539,6 +545,13 @@ export default function Upstreams() {
                   {isFree(u) && (
                     <Tooltip title="免费节点">
                       <GiftOutlined style={{ marginLeft: 6, color: '#45c98a', fontSize: 13 }} />
+                    </Tooltip>
+                  )}
+                  {poolTagOf(u) && (
+                    <Tooltip title="账号池的池组节点——请求时由账号池按顺序轮换注入凭证">
+                      <Tag color="gold" style={{ marginLeft: 6, marginInlineEnd: 0, fontSize: 11 }}>
+                        <TeamOutlined /> 池组
+                      </Tag>
                     </Tooltip>
                   )}
                 </div>

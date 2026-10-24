@@ -10,7 +10,7 @@ import secrets
 import threading
 import time
 import uuid
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -232,6 +232,62 @@ class Settings(BaseModel):
         return v if v in VOICE_MODES else "auto"
 
 
+class PooledAccount(BaseModel):
+    """账号池里的一枚账号：同一家上游服务的多份凭证之一。
+
+    凭证二选一：`api_key`（标准 API 服务的多 Key 轮换）或
+    `cookie`（WorkBuddy 等「登录即授权」的服务）。
+    `usage_limit` 为 0 表示未配上限（不受额度约束）。
+    """
+
+    id: str = Field(default_factory=lambda: new_id("ac_"))
+    label: str = ""  # 展示名（一般为邮箱）
+    api_key: str = ""
+    cookie: str = ""
+    enabled: bool = True  # 参与轮换的开关；401/403 会自动置 False
+    usage_used: int = 0  # 本地记的额度用量（可选）
+    usage_limit: int = 0  # 0 = 未配上限
+    note: str = ""
+    last_used_at: float = 0.0
+    total_requests: int = 0
+    failed_requests: int = 0
+    last_error: str = ""
+
+    def masked(self) -> str:
+        s = self.api_key or self.cookie
+        if not s:
+            return ""
+        if len(s) <= 12:
+            return s
+        return f"{s[:6]}{'*' * 6}{s[-4:]}"
+
+
+class AccountPool(BaseModel):
+    """账号池：同一家上游服务的多枚账号，按顺序轮换。
+
+    语义（对齐 CC-Switch 的 WorkBuddy 国际版页）：
+    网关优先用第一个账号；前一个的额度用尽/凭证失效后自动换下一个。
+    `auto_upstream` 打开时，创建池会同步在「上游管理」里加一个同名的
+    池组节点（note 带前缀 `account-pool:<pool_id>`），删除池时保留该节点。
+    """
+
+    id: str = Field(default_factory=lambda: new_id("ap_"))
+    name: str = "新账号池"
+    kind: str = "workbuddy"  # workbuddy / multikey / …（开放枚举，展示用）
+    base_url: str = ""  # 池背后的公共上游地址
+    protocol: Protocol = "openai"
+    notes: str = ""
+    auto_upstream: bool = True
+    accounts: list[PooledAccount] = Field(default_factory=list)
+
+    # 池组上游节点的 note 标记前缀（上游管理页据此显示池组徽章）
+    UPSTREAM_TAG: ClassVar[str] = "account-pool:"
+
+    def upstream_note(self) -> str:
+        """给池组上游节点用的 note 标记。"""
+        return f"{self.UPSTREAM_TAG}{self.id}"
+
+
 class ClientProfile(BaseModel):
     """客户端接入档位：一键把本地客户端指向本服务。"""
     id: str = Field(default_factory=lambda: new_id("cp_"))
@@ -252,6 +308,7 @@ class Config(BaseModel):
     mappings: list[ModelMapping] = Field(default_factory=list)
     client_keys: list[ClientKey] = Field(default_factory=list)
     client_profiles: list[ClientProfile] = Field(default_factory=list)
+    account_pools: list[AccountPool] = Field(default_factory=list)
     settings: Settings = Field(default_factory=Settings)
 
 
@@ -545,6 +602,51 @@ class ConfigStore:
                 self.save()
                 return True
         return False
+
+    # ---------- 账号池 ----------
+    def list_pools(self) -> list[AccountPool]:
+        with self._lock:
+            return list(self.config.account_pools)
+
+    def get_pool(self, pid: str) -> AccountPool | None:
+        with self._lock:
+            for p in self.config.account_pools:
+                if p.id == pid:
+                    return p
+        return None
+
+    def add_pool(self, data: dict[str, Any]) -> AccountPool:
+        with self._lock:
+            p = AccountPool.model_validate(data)
+            self.config.account_pools.append(p)
+            self.save()
+            return p
+
+    def update_pool(self, pid: str, data: dict[str, Any]) -> AccountPool | None:
+        with self._lock:
+            for p in self.config.account_pools:
+                if p.id != pid:
+                    continue
+                for k, v in (data or {}).items():
+                    if k not in AccountPool.model_fields or k == "id":
+                        continue
+                    # accounts 里的 dict 要重新校验成 PooledAccount
+                    if k == "accounts":
+                        v = [PooledAccount.model_validate(a) if isinstance(a, dict) else a
+                             for a in (v or [])]
+                    setattr(p, k, v)
+                self.save()
+                return p
+        return None
+
+    def delete_pool(self, pid: str) -> bool:
+        with self._lock:
+            before = len(self.config.account_pools)
+            self.config.account_pools = [p for p in self.config.account_pools if p.id != pid]
+            if len(self.config.account_pools) == before:
+                return False
+            self.save()
+            return True
 
     # ---------- settings ----------
     def update_settings(self, data: dict[str, Any]) -> Settings:

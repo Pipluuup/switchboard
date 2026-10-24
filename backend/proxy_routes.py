@@ -21,7 +21,7 @@ from . import responses_converter as rc
 from .config import ChainHop, store
 from .database import db
 from .limiter import limiter
-from .upstream_pool import pool
+from .upstream_pool import pool, pool_id_of
 
 router = APIRouter()
 
@@ -491,6 +491,10 @@ async def handle_request(request: Request, in_protocol: str):
             continue
         tried.append(up.name)
         hop_model = entry.target or target_model
+        # 账号池节点（note 带 account-pool: 前缀）：按顺序轮换选一枚账号，
+        # 凭证在 pool.call 里注入；账号级成败单独记账，不影响上游熔断器
+        pid = pool_id_of(up)
+        acct = pool.current_account(pid) if pid else None
 
         # ---- 构造上游 payload ----
         if in_protocol == up.protocol:
@@ -508,10 +512,13 @@ async def handle_request(request: Request, in_protocol: str):
             payload = conv(body, hop_model)
 
         try:
-            resp = await pool.call(up, payload, stream, session_id=session_id)
+            resp = await pool.call(up, payload, stream, session_id=session_id,
+                                   account=acct)
         except Exception as e:  # noqa: BLE001
             # 注意：这里不能 aclose 共享连接池，否则会打断并发中的其他请求
             pool.report_failure(up, f"{type(e).__name__}: {e}")
+            if pid and acct:
+                pool.report_account_failure(pid, acct.id, f"{type(e).__name__}: {e}")
             last_err = f"{up.name}: {type(e).__name__}: {e}"
             trail.append({"hop": entry.hop + 1, "upstream": up.name, "model": hop_model,
                           "status": 0, "result": f"{type(e).__name__}: {e}"[:120]})
@@ -529,6 +536,9 @@ async def handle_request(request: Request, in_protocol: str):
             # 否则上游是好的也会被误熔断。401/403 会立即熔断（Key 失效）。
             pool.report_failure(up, f"HTTP {resp.status_code}: {text[:200]}",
                                 status_code=resp.status_code)
+            # 账号池节点：凭证错误（401/403）自动停用该账号，下一次请求换下一枚
+            if pid and acct:
+                pool.report_account_failure(pid, acct.id, text[:200], resp.status_code)
             last_err = f"{up.name} -> HTTP {resp.status_code}: {text[:300]}"
             last_status = resp.status_code
             trail.append({"hop": entry.hop + 1, "upstream": up.name, "model": hop_model,
@@ -560,7 +570,7 @@ async def handle_request(request: Request, in_protocol: str):
         client_key_val = ck.key if ck else ""
 
         def make_log(captured: str, out_obj: Any = None, up=up, in_tok=in_tokens_est,
-                     hop_model=hop_model):
+                     hop_model=hop_model, pid=pid, acct=acct):
             tin, tout, cread, cwrite = extract_usage(captured, up.protocol)
             if not tin:
                 tin = in_tok
@@ -586,6 +596,9 @@ async def handle_request(request: Request, in_protocol: str):
                 failover_trail=json.dumps(trail, ensure_ascii=False),
             )
             pool.report_success(up, int((time.time() - up_start) * 1000))
+            # 账号池节点：给选中的账号记一笔用量
+            if pid and acct:
+                pool.report_account_success(pid, acct.id)
             if ck:
                 ck.last_used_at = time.time()
                 ck.total_requests += 1
