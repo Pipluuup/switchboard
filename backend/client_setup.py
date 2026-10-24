@@ -47,6 +47,12 @@ CLIENTS: dict[str, dict[str, Any]] = {
         "format": "env",
         "hint": "Gemini 协议（需上游支持）：GOOGLE_GEMINI_BASE_URL 指向本服务",
     },
+    "qwen": {
+        "label": "Qwen Code",
+        "config_path": "~/.qwen/.env",
+        "format": "env",
+        "hint": "OpenAI 兼容：OPENAI_BASE_URL 指向本服务 /v1，模型用网关里的别名",
+    },
 }
 
 
@@ -101,6 +107,13 @@ CLAUDE_BYPASS_VARS = (
 )
 
 
+def _tier_alias(profile: dict, tier: str) -> str:
+    """档位模型：优先档位差异化映射 tier_models（小写键），未配置回落到默认 model。"""
+    tiers = profile.get("tier_models")
+    v = tiers.get(tier.lower()) if isinstance(tiers, dict) else ""
+    return str(v or "").strip() or (profile.get("model") or "")
+
+
 def _apply_claude(profile: dict, base: str, key: str) -> str:
     """写 Claude Code 的 settings.json（只动 env 段，其余原样保留）。"""
     path = _home(CLIENTS["claude"]["config_path"])
@@ -117,10 +130,11 @@ def _apply_claude(profile: dict, base: str, key: str) -> str:
     env["ANTHROPIC_AUTH_TOKEN"] = key
     if model:
         for tier in CLAUDE_TIERS:
-            env[f"ANTHROPIC_DEFAULT_{tier}_MODEL"] = model
+            alias = _tier_alias(profile, tier)
+            env[f"ANTHROPIC_DEFAULT_{tier}_MODEL"] = alias
             # 显示名跟着别名走：徽章显示的就是这个，而不是网关侧的真实上游名。
             # 不写的话，settings.json 里旧的 _MODEL_NAME 会一直留在徽章上。
-            env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_NAME"] = model
+            env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_NAME"] = alias
         # 主模型也要同步：否则客户端残留的其他供应商模型名（如方舟的
         # ark-code-latest）会覆盖档位模型，请求到不了我们想去的上游。
         env["ANTHROPIC_MODEL"] = model
@@ -168,16 +182,37 @@ def _apply_codex(profile: dict, base: str, key: str) -> str:
 
 def _apply_gemini(profile: dict, base: str, key: str) -> str:
     """写 Gemini CLI 的 .env。"""
-    path = _home(CLIENTS["gemini"]["config_path"])
+    return _write_env(
+        _home(CLIENTS["gemini"]["config_path"]),
+        {
+            "GOOGLE_GEMINI_BASE_URL": base,
+            "GEMINI_API_KEY": key,
+        },
+    )
+
+
+def _apply_qwen(profile: dict, base: str, key: str) -> str:
+    """写 Qwen Code 的 .env（OpenAI 兼容接入）。
+
+    Qwen Code（@qwen-code/qwen-code 全局 npm 包）与 Gemini CLI 同一套 env 机制，
+    但走 OpenAI 兼容协议：OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL。
+    """
+    return _write_env(
+        _home(CLIENTS["qwen"]["config_path"]),
+        {
+            "OPENAI_BASE_URL": f"{base}/v1",
+            "OPENAI_API_KEY": key,
+            "OPENAI_MODEL": profile.get("model") or "",
+        },
+    )
+
+
+def _write_env(path: str, wanted: dict[str, str]) -> str:
+    """env 文件通用改写：替换已有键的第一次出现，缺失键追加到末尾。"""
     lines: list[str] = []
     if os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
-
-    wanted = {
-        "GOOGLE_GEMINI_BASE_URL": base,
-        "GEMINI_API_KEY": key,
-    }
     out: list[str] = []
     replaced: set[str] = set()
     for ln in lines:
@@ -196,9 +231,6 @@ def _apply_gemini(profile: dict, base: str, key: str) -> str:
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(out).rstrip() + "\n")
     return path
-
-
-_APPLY = {"claude": _apply_claude, "codex": _apply_codex, "gemini": _apply_gemini}
 
 
 def apply_setup(client: str, profile: dict) -> dict:
@@ -279,10 +311,15 @@ def status(client: str) -> dict:
             info["model"] = m2.group(1) if m2 else ""
             info["attached"] = base in info["base_url"]
         else:
+            # gemini / qwen 都是 env 格式，只是键名不同
             with open(path, "r", encoding="utf-8") as f:
                 text = f.read()
-            m = re.search(r"^GOOGLE_GEMINI_BASE_URL=(.*)$", text, re.M)
+            base_key = "OPENAI_BASE_URL" if client == "qwen" else "GOOGLE_GEMINI_BASE_URL"
+            model_key = "OPENAI_MODEL" if client == "qwen" else "GEMINI_MODEL"
+            m = re.search(rf"^{base_key}=(.*)$", text, re.M)
             info["base_url"] = (m.group(1).strip() if m else "")
+            m2 = re.search(rf"^{model_key}=(.*)$", text, re.M)
+            info["model"] = (m2.group(1).strip() if m2 else "")
             info["attached"] = base in info["base_url"]
     except Exception as e:  # noqa: BLE001
         info["error"] = str(e)[:200]
@@ -291,3 +328,7 @@ def status(client: str) -> dict:
 
 def all_status() -> list[dict]:
     return [status(c) for c in CLIENTS]
+
+
+_APPLY = {"claude": _apply_claude, "codex": _apply_codex,
+          "gemini": _apply_gemini, "qwen": _apply_qwen}

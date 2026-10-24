@@ -10,6 +10,7 @@ const CLIENT_LABELS: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex CLI',
   gemini: 'Gemini CLI',
+  qwen: 'Qwen Code',
 }
 
 export default function Clients() {
